@@ -1,0 +1,14 @@
+build/
+target/
+*.o
+*.obj
+.cache/
+.vscode/
+.idea/
+*.log
+CMakeFiles/
+CMakeCache.txt
+rust/target/
+tools/__pycache__/
+.DS_Store
+.quickstart-build/

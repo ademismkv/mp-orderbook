@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NASDAQ order book replay — real C++ engine dashboard</title>
+<style>
+  :root {
+    --surface-1: #ffffff;
+    --surface-2: #f5f7fa;
+    --text-primary: #1a1a1a;
+    --text-secondary: #5b6470;
+    --border: #dfe3e8;
+    --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px 16px 60px;
+    background: var(--surface-2);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    color: var(--text-primary);
+  }
+  .wrap { max-width: 920px; margin: 0 auto; }
+  .stat-card { background: var(--surface-1); border: 1px solid #e5e8ec; border-radius: var(--radius); padding: 8px 10px; }
+  .stat-label { font-size: 10px; color: #8a93a0; margin-bottom: 3px; }
+  .stat-value { font-size: 15px; font-weight: 600; font-family: ui-monospace, monospace; }
+  .panel { background: var(--surface-1); border: 1px solid #e5e8ec; border-radius: var(--radius); padding: 10px 12px; }
+  .panel-title { font-size: 11px; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px; text-transform: uppercase; letter-spacing: .03em; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h2 style="position:absolute;width:1px;height:1px;overflow:hidden;">Dashboard showing real C++ matching engine performance over the full 400,391-event NASDAQ AAPL trading day, precomputed and stepped through interactively, plus real multithreading scaling numbers.</h2>
+
+<div style="display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-bottom:4px;">
+  <div style="font-size:17px; font-weight:700;">NASDAQ order book replay — real C++ engine, full trading day</div>
+  <div style="font-size:11px; padding:2px 8px; border-radius:999px; background:#dcfce7; color:#166534; border:1px solid #bbf7d0;">C++ measured, not JS</div>
+</div>
+<div style="font-size:13px; color:var(--text-secondary); margin-bottom:18px; line-height:1.5;">
+  All 400,391 real NASDAQ AAPL events (the full trading day in <code>data/</code>) were replayed through the actual compiled, TSan/ASan-verified <code>OrderBookV2</code> engine via <code>cpp/tools/replay_lobster_batched.cpp</code>, with real <code>std::chrono</code> timing per batch. What you're stepping through below is that real run's recorded output — the browser can't invoke a C++ compiler, so the numbers are measured ahead of time by the real engine, then played back interactively. See <code>cpp/tools/replay_lobster_batched.cpp</code> to re-run it yourself and regenerate this data.
+</div>
+
+<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:10px 12px; background:var(--surface-2); border-radius:var(--radius); margin-bottom:12px;">
+  <label style="font-size:12px; color:var(--text-secondary);">Batch size (real C++ runs)
+    <select id="batchSize" style="margin-left:6px; font-size:12px; padding:3px 6px; border-radius:6px; border:1px solid var(--border);">
+      <option value="5000">5,000 events/batch (81 batches)</option>
+      <option value="10000" selected>10,000 events/batch (41 batches)</option>
+      <option value="20000">20,000 events/batch (21 batches)</option>
+    </select>
+  </label>
+  <button id="pullBtn" style="font-size:12px; font-weight:600; padding:6px 14px; border-radius:8px; border:none; background:#2563eb; color:#fff; cursor:pointer;">Pull next batch</button>
+  <button id="autoBtn" style="font-size:12px; font-weight:600; padding:6px 14px; border-radius:8px; border:1px solid var(--border); background:var(--surface-1); color:var(--text-primary); cursor:pointer;">Auto-play</button>
+  <button id="resetBtn" style="font-size:12px; padding:6px 14px; border-radius:8px; border:1px solid var(--border); background:var(--surface-1); color:var(--text-secondary); cursor:pointer;">Reset</button>
+  <div style="flex:1; min-width:80px;"></div>
+  <div style="font-size:11px; color:var(--text-secondary);" id="progressLabel">0 / 400,391 real events</div>
+</div>
+
+<div style="height:6px; background:var(--surface-2); border-radius:4px; overflow:hidden; margin-bottom:16px;">
+  <div id="progressBar" style="height:100%; width:0%; background:#2563eb; transition:width .25s;"></div>
+</div>
+
+<div style="display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-bottom:16px;">
+  <div class="stat-card"><div class="stat-label">Batch latency (real C++)</div><div class="stat-value" id="statLatency">—</div></div>
+  <div class="stat-card"><div class="stat-label">Throughput (real C++)</div><div class="stat-value" id="statThroughput">—</div></div>
+  <div class="stat-card"><div class="stat-label">Trades this batch</div><div class="stat-value" id="statBatchTrades">0</div></div>
+  <div class="stat-card"><div class="stat-label">Volume this batch</div><div class="stat-value" id="statBatchVolume">0</div></div>
+  <div class="stat-card"><div class="stat-label">Cumulative trades</div><div class="stat-value" id="statTrades">0</div></div>
+  <div class="stat-card"><div class="stat-label">Cumulative volume</div><div class="stat-value" id="statVolume">0</div></div>
+  <div class="stat-card"><div class="stat-label">Best bid</div><div class="stat-value" id="statBid" style="color:#16a34a;">—</div></div>
+  <div class="stat-card"><div class="stat-label">Best ask</div><div class="stat-value" id="statAsk" style="color:#dc2626;">—</div></div>
+</div>
+
+<div style="display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-bottom:16px;">
+  <div class="stat-card"><div class="stat-label">Resting orders (depth)</div><div class="stat-value" id="statDepth">0</div></div>
+  <div class="stat-card"><div class="stat-label">Cancel misses (cum.)</div><div class="stat-value" id="statCancelMiss">0</div></div>
+  <div class="stat-card"><div class="stat-label">Reduce misses (cum.)</div><div class="stat-value" id="statReduceMiss">0</div></div>
+  <div class="stat-card"><div class="stat-label">Invariant violations</div><div class="stat-value" id="statInvariant" style="color:#16a34a;">0</div></div>
+</div>
+
+<div class="panel" style="margin-bottom:16px;">
+  <div class="panel-title">Per-batch latency &amp; throughput — real C++ engine, live playback</div>
+  <canvas id="latencyChart" height="90"></canvas>
+</div>
+
+<div class="panel" style="margin-bottom:8px;">
+  <div class="panel-title">Multithreading — real, separately measured (ADR-1)</div>
+  <div style="font-size:12px; color:var(--text-secondary); margin-bottom:10px; line-height:1.5;">
+    The LOBSTER file above is one symbol (AAPL), and per ADR-1 this engine gives each symbol exactly one matching thread — so the replay itself is correctly single-threaded, not a limitation. Multithreading is proven separately: N independent per-symbol books running concurrently, re-measured fresh this session (median of 3 runs, <code>cpp/bench/bench_threaded_scaling.cpp</code>, 4-core sandbox):
+  </div>
+  <canvas id="threadChart" height="70"></canvas>
+</div>
+
+<p style="font-size:11px; color:var(--text-secondary); margin-top:24px;">
+  Data source: <code>data/AAPL_2012-06-21_34200000_57600000_message_10.csv</code> (LOBSTER, see <code>data/README.md</code>). Batch numbers regenerated with: <code>g++ -std=c++20 -O2 -Iinclude cpp/src/order_book_v2.cpp cpp/tools/replay_lobster_batched.cpp -o replay_batched &amp;&amp; ./replay_batched data/AAPL_2012-06-21_34200000_57600000_message_10.csv 10000</code>.
+</p>
+
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<script>
+(function(){
+// Real output of cpp/tools/replay_lobster_batched.cpp run against the full
+// 400,391-event AAPL trading day, at three batch granularities. Columns:
+// [batch_idx, batch_events, batch_wall_ns, cum_events, cum_trades,
+//  cum_trade_qty, cum_invariant_violations, cum_cancel_misses,
+//  cum_reduce_misses, best_bid, best_ask, depth]
+const BATCHES_5000 = [[0,5000,5568708,5000,2,105,0,36,0,5862300,5867800,31],[1,5000,4450584,10000,11,723,0,58,0,5874000,5875000,68],[2,5000,4393250,15000,32,1874,0,86,0,5862700,5864000,101],[3,5000,4371542,20000,50,2899,0,131,0,5863300,5865700,140],[4,5000,4153958,25000,101,6908,0,211,0,5860700,5862500,206],[5,5000,4082333,30000,315,19949,0,408,0,5863500,5865500,260],[6,5000,4103833,35000,425,24566,0,502,0,5858700,5860900,330],[7,5000,4221250,40000,810,37472,0,781,0,5859300,5861000,314],[8,5000,4143875,45000,1079,51037,0,944,0,5844500,5844600,282],[9,5000,4098291,50000,1105,52366,0,1005,0,5846600,5849000,387],[10,5000,4164084,55000,1194,55607,0,1097,0,5849800,5850700,442],[11,5000,4326291,60000,1400,66822,0,1258,0,5859500,5861400,508],[12,5000,4313334,65000,1605,80989,0,1371,0,5861900,5863000,481],[13,5000,4109584,70000,1926,88204,0,1636,0,5855100,5855600,559],[14,5000,4213833,75000,1956,89377,0,1726,0,5855600,5856500,718],[15,5000,4266541,80000,2241,98925,0,1886,0,5859700,5861200,682],[16,5000,4133166,85000,2440,105851,0,2043,0,5863900,5865800,675],[17,5000,4117667,90000,2694,118773,0,2216,0,5869200,5870100,663],[18,5000,4233666,95000,2922,130076,0,2402,0,5878700,5880000,715],[19,5000,4182917,100000,3050,134763,0,2530,0,5876700,5876900,779],[20,5000,4054208,105000,3282,144816,0,2701,0,5868700,5869900,850],[21,5000,4048875,110000,3609,155478,0,2900,0,5866300,5867400,840],[22,5000,4241625,115000,3835,163569,0,3072,0,5859900,5861700,848],[23,5000,4328250,120000,4204,174421,0,3316,1,5854300,5855200,817],[24,5000,4146959,125000,4410,182846,0,3456,1,5861400,5863000,817],[25,5000,4074250,130000,4538,187359,0,3546,1,5854400,5854700,849],[26,5000,4137708,135000,4692,194033,0,3641,1,5852900,5853400,870],[27,5000,4254791,140000,5177,211156,0,3895,3,5846900,5847700,656],[28,5000,4121750,145000,5266,213969,0,3972,3,5847100,5848300,768],[29,5000,4066750,150000,5414,219293,0,4088,3,5850800,5851400,822],[30,5000,4186209,155000,5511,223580,0,4205,3,5851000,5852200,885],[31,5000,4237917,160000,5647,229742,0,4343,3,5847600,5849200,922],[32,5000,4174250,165000,6150,250772,0,4682,7,5838200,5840700,779],[33,5000,4099458,170000,6164,251390,0,4740,7,5840100,5841700,870],[34,5000,4249541,175000,6353,257272,0,4900,7,5841800,5841900,911],[35,5000,4215625,180000,6473,261004,0,5015,7,5836600,5837700,969],[36,5000,4132333,185000,6569,264333,0,5150,8,5827900,5828900,1028],[37,5000,4013416,190000,6662,267502,0,5251,10,5829300,5830600,1107],[38,5000,4103000,195000,6736,270102,0,5332,10,5827400,5827700,1195],[39,5000,4328500,200000,6931,276244,0,5463,10,5827700,5829100,1184],[40,5000,4124292,205000,7210,286619,0,5628,10,5834500,5834600,1129],[41,5000,4063750,210000,7358,292242,0,5756,10,5834500,5836500,1222],[42,5000,4146125,215000,7609,300441,0,5929,11,5840700,5841700,1191],[43,5000,4178458,220000,7769,305052,0,6068,11,5835000,5836900,1234],[44,5000,4080833,225000,8067,315186,0,6269,11,5830600,5832000,1217],[45,5000,4023875,230000,8280,323741,0,6411,11,5826900,5828700,1185],[46,5000,4213083,235000,8339,325567,0,6498,11,5825200,5825900,1272],[47,5000,4292208,240000,8582,332974,0,6683,11,5820300,5820500,1280],[48,5000,4115375,245000,8675,336656,0,6771,11,5825700,5826100,1324],[49,5000,4083375,250000,8851,342597,0,6918,11,5828700,5828800,1369],[50,5000,4153167,255000,9049,350333,0,7056,11,5830200,5831400,1388],[51,5000,4243208,260000,9130,352840,0,7124,11,5827500,5827600,1461],[52,5000,4054833,265000,9509,369741,0,7321,12,5819500,5820100,1372],[53,5000,4119334,270000,9646,375117,0,7439,12,5811300,5811600,1391],[54,5000,4292375,275000,9683,376405,0,7560,12,5810000,5810900,1460],[55,5000,4281417,280000,9726,377977,0,7657,12,5807200,5807700,1566],[56,5000,4123166,285000,9943,386162,0,7824,12,5812600,5813000,1576],[57,5000,4044625,290000,9985,388149,0,7911,12,5814100,5814200,1682],[58,5000,4258208,295000,10293,398990,0,8120,12,5816900,5817400,1619],[59,5000,4229042,300000,10388,402298,0,8233,12,5812600,5813600,1688],[60,5000,4115208,305000,10583,409372,0,8373,12,5816100,5817300,1712],[61,5000,4060500,310000,10759,415907,0,8520,12,5815000,5815700,1749],[62,5000,4189958,315000,11090,427293,0,8711,12,5810000,5810300,1687],[63,5000,4269500,320000,11309,433609,0,8857,12,5808400,5809600,1701],[64,5000,4073458,325000,11545,442114,0,9070,12,5800700,5800800,1688],[65,5000,4034334,330000,11558,442704,0,9158,12,5793500,5793800,1750],[66,5000,4149625,335000,11633,446202,0,9246,13,5798200,5798900,1799],[67,5000,4230750,340000,11717,449936,0,9322,14,5799500,5800700,1828],[68,5000,4077959,345000,11794,452349,0,9391,14,5796400,5797100,1872],[69,5000,4033292,350000,11968,459449,0,9534,14,5789300,5790500,1875],[70,5000,5232291,355000,12099,465353,0,9746,14,5781100,5782200,2022],[71,5000,4196917,360000,12182,469370,0,9858,14,5785800,5786000,2081],[72,5000,4093042,365000,12412,479181,0,10043,15,5785100,5785200,2136],[73,5000,4009791,370000,12524,484772,0,10150,17,5781900,5783500,2126],[74,5000,4343500,375000,12630,489609,0,10212,18,5778800,5780500,2086],[75,5000,4154208,380000,12652,490947,0,10281,18,5778300,5778500,2182],[76,5000,4065667,385000,12841,502923,0,10468,18,5780600,5781600,2185],[77,5000,4005125,390000,13001,511673,0,10618,27,5780400,5781100,2228],[78,5000,4169833,395000,13097,517115,0,10755,30,5778300,5778500,2324],[79,5000,4256416,400000,13298,528509,0,10896,32,5775500,5776100,2310],[80,391,323417,400391,13298,528509,0,10902,33,5775400,5776700,2303]];
+const BATCHES_10000 = [[0,10000,9637875,10000,11,723,0,58,0,5874000,5875000,68],[1,10000,8070166,20000,50,2899,0,131,0,5863300,5865700,140],[2,10000,7721750,30000,315,19949,0,408,0,5863500,5865500,260],[3,10000,7773166,40000,810,37472,0,781,0,5859300,5861000,314],[4,10000,7786584,50000,1105,52366,0,1005,0,5846600,5849000,387],[5,10000,7919417,60000,1400,66822,0,1258,0,5859500,5861400,508],[6,10000,7789750,70000,1926,88204,0,1636,0,5855100,5855600,559],[7,10000,7929000,80000,2241,98925,0,1886,0,5859700,5861200,682],[8,10000,7744542,90000,2694,118773,0,2216,0,5869200,5870100,663],[9,10000,7919834,100000,3050,134763,0,2530,0,5876700,5876900,779],[10,10000,7707000,110000,3609,155478,0,2900,0,5866300,5867400,840],[11,10000,8049833,120000,4204,174421,0,3316,1,5854300,5855200,817],[12,10000,7693917,130000,4538,187359,0,3546,1,5854400,5854700,849],[13,10000,7968084,140000,5177,211156,0,3895,3,5846900,5847700,656],[14,10000,7705833,150000,5414,219293,0,4088,3,5850800,5851400,822],[15,10000,7903291,160000,5647,229742,0,4343,3,5847600,5849200,922],[16,10000,7731958,170000,6164,251390,0,4740,7,5840100,5841700,870],[17,10000,7758000,180000,6473,261004,0,5015,7,5836600,5837700,969],[18,10000,7649209,190000,6662,267502,0,5251,10,5829300,5830600,1107],[19,10000,8000292,200000,6931,276244,0,5463,10,5827700,5829100,1184],[20,10000,8066458,210000,7358,292242,0,5756,10,5834500,5836500,1222],[21,10000,7880000,220000,7769,305052,0,6068,11,5835000,5836900,1234],[22,10000,8137125,230000,8280,323741,0,6411,11,5826900,5828700,1185],[23,10000,7947375,240000,8582,332974,0,6683,11,5820300,5820500,1280],[24,10000,8186125,250000,8851,342597,0,6918,11,5828700,5828800,1369],[25,10000,7918750,260000,9130,352840,0,7124,11,5827500,5827600,1461],[26,10000,8082375,270000,9646,375117,0,7439,12,5811300,5811600,1391],[27,10000,7772208,280000,9726,377977,0,7657,12,5807200,5807700,1566],[28,10000,8312500,290000,9985,388149,0,7911,12,5814100,5814200,1682],[29,10000,8002917,300000,10388,402298,0,8233,12,5812600,5813600,1688],[30,10000,8323750,310000,10759,415907,0,8520,12,5815000,5815700,1749],[31,10000,8030250,320000,11309,433609,0,8857,12,5808400,5809600,1701],[32,10000,8601083,330000,11558,442704,0,9158,12,5793500,5793800,1750],[33,10000,8116292,340000,11717,449936,0,9322,14,5799500,5800700,1828],[34,10000,8170959,350000,11968,459449,0,9534,14,5789300,5790500,1875],[35,10000,13112875,360000,12182,469370,0,9858,14,5785800,5786000,2081],[36,10000,7722583,370000,12524,484772,0,10150,17,5781900,5783500,2126],[37,10000,8073917,380000,12652,490947,0,10281,18,5778300,5778500,2182],[38,10000,7520000,390000,13001,511673,0,10618,27,5780400,5781100,2228],[39,10000,7691000,400000,13298,528509,0,10896,32,5775500,5776100,2310],[40,391,299750,400391,13298,528509,0,10902,33,5775400,5776700,2303]];
+const BATCHES_20000 = [[0,20000,17740375,20000,50,2899,0,131,0,5863300,5865700,140],[1,20000,15538000,40000,810,37472,0,781,0,5859300,5861000,314],[2,20000,16019458,60000,1400,66822,0,1258,0,5859500,5861400,508],[3,20000,15701583,80000,2241,98925,0,1886,0,5859700,5861200,682],[4,20000,15670208,100000,3050,134763,0,2530,0,5876700,5876900,779],[5,20000,15446083,120000,4204,174421,0,3316,1,5854300,5855200,817],[6,20000,15570458,140000,5177,211156,0,3895,3,5846900,5847700,656],[7,20000,15600167,160000,5647,229742,0,4343,3,5847600,5849200,922],[8,20000,15390083,180000,6473,261004,0,5015,7,5836600,5837700,969],[9,20000,15596417,200000,6931,276244,0,5463,10,5827700,5829100,1184],[10,20000,15778458,220000,7769,305052,0,6068,11,5835000,5836900,1234],[11,20000,15999083,240000,8582,332974,0,6683,11,5820300,5820500,1280],[12,20000,15786750,260000,9130,352840,0,7124,11,5827500,5827600,1461],[13,20000,15829584,280000,9726,377977,0,7657,12,5807200,5807700,1566],[14,20000,15635041,300000,10388,402298,0,8233,12,5812600,5813600,1688],[15,20000,15658375,320000,11309,433609,0,8857,12,5808400,5809600,1701],[16,20000,15401542,340000,11717,449936,0,9322,14,5799500,5800700,1828],[17,20000,16432209,360000,12182,469370,0,9858,14,5785800,5786000,2081],[18,20000,15573416,380000,12652,490947,0,10281,18,5778300,5778500,2182],[19,20000,15370208,400000,13298,528509,0,10896,32,5775500,5776100,2310],[20,391,408083,400391,13298,528509,0,10902,33,5775400,5776700,2303]];
+
+const DATASETS = {5000: BATCHES_5000, 10000: BATCHES_10000, 20000: BATCHES_20000};
+const TOTAL_EVENTS = 400391;
+
+function dollars(p){ return (p/10000).toFixed(2); }
+
+let cursor = 0;
+let auto = false;
+let autoTimer = null;
+let chartLabels = [], chartLatency = [], chartThroughput = [];
+
+const batchSel = document.getElementById('batchSize');
+const pullBtn = document.getElementById('pullBtn');
+const autoBtn = document.getElementById('autoBtn');
+const resetBtn = document.getElementById('resetBtn');
+
+const ctx = document.getElementById('latencyChart').getContext('2d');
+const chart = new Chart(ctx, {
+  type: 'bar',
+  data: { labels: [], datasets: [
+    { label: 'Latency (ms, real C++)', data: [], backgroundColor: '#2563eb', yAxisID: 'y', order: 2 },
+    { label: 'Throughput (events/sec, real C++)', data: [], type: 'line', borderColor: '#16a34a', backgroundColor: '#16a34a', yAxisID: 'y1', tension: .3, order: 1 }
+  ]},
+  options: {
+    responsive: true,
+    interaction: { mode: 'index', intersect: false },
+    scales: {
+      y: { position:'left', title:{display:true, text:'ms', font:{size:10}}, ticks:{font:{size:9}} },
+      y1: { position:'right', grid:{drawOnChartArea:false}, title:{display:true, text:'events/sec', font:{size:10}}, ticks:{font:{size:9}} },
+      x: { ticks:{font:{size:9}} }
+    },
+    plugins: { legend: { labels:{font:{size:10}} } }
+  }
+});
+
+// Real median-of-3 fresh re-run of cpp/bench/bench_threaded_scaling.cpp,
+// 1,000,000 ops/symbol, this session, this sandbox (4 cores).
+const threadCtx = document.getElementById('threadChart').getContext('2d');
+new Chart(threadCtx, {
+  type: 'bar',
+  data: {
+    labels: ['1 symbol', '2 symbols', '3 symbols', '4 symbols'],
+    datasets: [{ label: 'Aggregate throughput (M ops/sec, real, median of 3 runs)', data: [4.849, 8.565, 10.929, 14.286], backgroundColor: '#7c3aed' }]
+  },
+  options: {
+    responsive: true,
+    scales: { y: { title:{display:true, text:'M ops/sec', font:{size:10}}, ticks:{font:{size:9}} }, x: { ticks:{font:{size:9}} } },
+    plugins: { legend: { display:false } }
+  }
+});
+
+function renderStats(row, prevRow){
+  const [idx, events, wallNs, cumEvents, cumTrades, cumQty, cumInv, cumCancelMiss, cumReduceMiss, bid, ask, depth] = row;
+  const latencyMs = wallNs / 1e6;
+  const throughput = Math.round(events / (wallNs / 1e9));
+  const batchTrades = prevRow ? cumTrades - prevRow[4] : cumTrades;
+  const batchQty = prevRow ? cumQty - prevRow[5] : cumQty;
+
+  document.getElementById('statLatency').textContent = latencyMs.toFixed(3) + ' ms';
+  document.getElementById('statThroughput').textContent = throughput.toLocaleString() + '/s';
+  document.getElementById('statBatchTrades').textContent = batchTrades.toLocaleString();
+  document.getElementById('statBatchVolume').textContent = batchQty.toLocaleString();
+  document.getElementById('statTrades').textContent = cumTrades.toLocaleString();
+  document.getElementById('statVolume').textContent = cumQty.toLocaleString();
+  document.getElementById('statBid').textContent = '$' + dollars(bid);
+  document.getElementById('statAsk').textContent = '$' + dollars(ask);
+  document.getElementById('statDepth').textContent = depth.toLocaleString();
+  document.getElementById('statCancelMiss').textContent = cumCancelMiss.toLocaleString();
+  document.getElementById('statReduceMiss').textContent = cumReduceMiss.toLocaleString();
+  document.getElementById('statInvariant').textContent = cumInv;
+  document.getElementById('progressLabel').textContent = cumEvents.toLocaleString() + ' / ' + TOTAL_EVENTS.toLocaleString() + ' real events';
+  document.getElementById('progressBar').style.width = (100 * cumEvents / TOTAL_EVENTS) + '%';
+
+  chartLabels.push('#' + idx);
+  chartLatency.push(latencyMs);
+  chartThroughput.push(throughput);
+  if(chartLabels.length > 30){ chartLabels.shift(); chartLatency.shift(); chartThroughput.shift(); }
+  chart.data.labels = chartLabels;
+  chart.data.datasets[0].data = chartLatency;
+  chart.data.datasets[1].data = chartThroughput;
+  chart.update('none');
+}
+
+function currentData(){ return DATASETS[batchSel.value]; }
+
+function pullBatch(){
+  const data = currentData();
+  if(cursor >= data.length){ stopAuto(); pullBtn.disabled = true; pullBtn.textContent = 'All real batches replayed'; return; }
+  const row = data[cursor];
+  const prevRow = cursor > 0 ? data[cursor - 1] : null;
+  renderStats(row, prevRow);
+  cursor++;
+}
+
+function stopAuto(){
+  auto = false;
+  if(autoTimer){ clearInterval(autoTimer); autoTimer = null; }
+  autoBtn.textContent = 'Auto-play';
+}
+
+pullBtn.addEventListener('click', pullBatch);
+resetBtn.addEventListener('click', function(){
+  stopAuto();
+  cursor = 0;
+  chartLabels = []; chartLatency = []; chartThroughput = [];
+  chart.data.labels = []; chart.data.datasets[0].data = []; chart.data.datasets[1].data = [];
+  chart.update('none');
+  pullBtn.disabled = false;
+  pullBtn.textContent = 'Pull next batch';
+  ['statLatency','statThroughput'].forEach(id=>document.getElementById(id).textContent='—');
+  ['statBatchTrades','statBatchVolume','statTrades','statVolume','statDepth','statCancelMiss','statReduceMiss','statInvariant'].forEach(id=>document.getElementById(id).textContent='0');
+  document.getElementById('statBid').textContent='—';
+  document.getElementById('statAsk').textContent='—';
+  document.getElementById('progressLabel').textContent = '0 / ' + TOTAL_EVENTS.toLocaleString() + ' real events';
+  document.getElementById('progressBar').style.width = '0%';
+});
+autoBtn.addEventListener('click', function(){
+  if(auto){ stopAuto(); return; }
+  auto = true;
+  autoBtn.textContent = 'Stop auto-play';
+  autoTimer = setInterval(pullBatch, 500);
+});
+batchSel.addEventListener('change', function(){
+  resetBtn.click();
+});
+})();
+</script>
+</body>
+</html>

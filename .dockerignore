@@ -1,0 +1,6 @@
+.git
+rust/target
+tools/__pycache__
+.quickstart-build
+docs
+*.DS_Store

@@ -1,0 +1,68 @@
+//! The `cxx` bridge itself — ADR-3's "control plane" boundary.
+//!
+//! This module declares shared types (not reused C++ enums — cxx requires
+//! shared enums/structs to be defined inside the bridge macro itself, so
+//! these are deliberately separate from ::Side / ::Type / ::OrderRequest /
+//! ::Trade in cpp/include/order_book_v2.h) plus the opaque `OrderBookV2Ffi`
+//! C++ type and the functions exposed on it. The actual field-by-field
+//! translation into the real, already-verified OrderBookV2 lives in
+//! cpp/src/order_book_v2_ffi.cpp — this file only declares the shape of the
+//! boundary, it contains no matching logic.
+//!
+//! Compiled by rust/build.rs via `cxx_build::bridge("src/ffi.rs")`, which
+//! also compiles cpp/src/order_book_v2.cpp and
+//! cpp/src/order_book_v2_ffi.cpp directly (a separate, independent build
+//! from the CMake one in cpp/ — this crate does not depend on CMake).
+
+#[cxx::bridge(namespace = "ffi")]
+mod bridge {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum FfiSide {
+        Buy,
+        Sell,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum FfiOrderType {
+        Limit,
+        Market,
+        Cancel,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct FfiOrderRequest {
+        id: u64,
+        side: FfiSide,
+        kind: FfiOrderType,
+        price: i64,
+        qty: u64,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct FfiTrade {
+        maker_id: u64,
+        taker_id: u64,
+        price: i64,
+        qty: u64,
+    }
+
+    unsafe extern "C++" {
+        include!("order_book_v2_ffi.h");
+
+        type OrderBookV2Ffi;
+
+        fn make_order_book(arena_capacity: u32, initial_window: i64) -> UniquePtr<OrderBookV2Ffi>;
+
+        fn add(self: Pin<&mut OrderBookV2Ffi>, req: FfiOrderRequest) -> Vec<FfiTrade>;
+        fn cancel(self: Pin<&mut OrderBookV2Ffi>, id: u64) -> bool;
+        fn reduce(self: Pin<&mut OrderBookV2Ffi>, id: u64, delta: u64) -> bool;
+
+        fn best_bid(self: &OrderBookV2Ffi) -> i64;
+        fn best_ask(self: &OrderBookV2Ffi) -> i64;
+        fn has_bid(self: &OrderBookV2Ffi) -> bool;
+        fn has_ask(self: &OrderBookV2Ffi) -> bool;
+        fn depth(self: &OrderBookV2Ffi) -> usize;
+    }
+}
+
+pub use bridge::{make_order_book, FfiOrderRequest, FfiOrderType, FfiSide, FfiTrade, OrderBookV2Ffi};

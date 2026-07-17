@@ -1,0 +1,15 @@
+[package]
+name = "matching-engine-sidecar"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[dependencies]
+cxx = "1"
+
+[build-dependencies]
+cxx-build = "1"
+
+[lib]
+name = "sidecar"
+path = "src/lib.rs"
