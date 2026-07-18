@@ -1,4 +1,9 @@
 #include "order_book_v2_ffi.h"
+// Must come after order_book_v2_ffi.h: OrderBookV2Ffi has to already be
+// fully declared (from the header above) before this generated header's
+// `using OrderBookV2Ffi = ::OrderBookV2Ffi;` alias runs. See the comment
+// in order_book_v2_ffi.h for why the header itself can't include this.
+#include "matching-engine-sidecar/src/ffi.rs.h"
 
 namespace {
 

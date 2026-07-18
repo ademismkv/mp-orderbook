@@ -167,6 +167,17 @@ error: no member named 'OrderBookV2Ffi' in namespace 'ffi'; did you mean simply 
 
 Fixed by dropping `namespace = "ffi"` from the bridge macro so cxx generates everything at global scope, matching the C++ side as written. Worth being honest about why the earlier standalone C++ verification (`cpp/tests/test_order_book_v2_ffi_standalone.cpp`, run against hand-written mock headers in `cpp/tests/ffi_mock/`) didn't catch this: those mock headers made the identical global-scope assumption, so they matched the (also wrong) C++ header instead of matching what real `cxx_build` actually generates. That test proved the C++ translation logic works; it never proved the namespace was right — only a real `cargo build` could do that.
 
+**Second bug, found on the next real `cargo build`:** a circular include. `order_book_v2_ffi.h` included the generated `matching-engine-sidecar/src/ffi.rs.h` directly, above its own `class OrderBookV2Ffi` declaration. `cxx_build` inserts `#include "order_book_v2_ffi.h"` straight into its generated `ffi.rs.cc`, and expects `ffi.rs.h` — which it includes *afterward*, ending in `using OrderBookV2Ffi = ::OrderBookV2Ffi;` — to run only once the real class already exists. With `#pragma once` on both headers, having `order_book_v2_ffi.h` include `ffi.rs.h` first meant that alias line ran before the class was ever declared:
+
+```
+error: no type named 'OrderBookV2Ffi' in the global namespace; did you mean 'OrderBookV2'?
+  678 | using OrderBookV2Ffi = ::OrderBookV2Ffi;
+error: definition of type 'OrderBookV2Ffi' conflicts with type alias of the same name
+   30 | class OrderBookV2Ffi {
+```
+
+Fixed by removing that include from `order_book_v2_ffi.h` (replaced with forward declarations of `FfiOrderRequest`/`FfiTrade`, which are enough for method signatures) and including `ffi.rs.h` directly — after `order_book_v2_ffi.h` — in both `cpp/src/order_book_v2_ffi.cpp` and the standalone test, where the complete struct definitions are actually needed. Re-verified the standalone test and the full `quickstart.sh` suite still pass after this change.
+
 **What's here now:**
 
 - `rust/src/ffi.rs` — the `cxx` bridge (ADR-3). Declares shared types (`FfiSide`, `FfiOrderType`, `FfiOrderRequest`, `FfiTrade` — separate from `::Side`/`::Type` in `order_book_v2.h`, because `cxx` requires shared enums to be defined inside the bridge macro itself) and the opaque `OrderBookV2Ffi` C++ type.
@@ -182,7 +193,7 @@ cargo build
 cargo test
 ```
 
-If `cargo build` still fails, paste the compiler error back — the namespace bug above is fixed, but the include-path wiring (`include!("order_book_v2_ffi.h")` in `ffi.rs` against `build.rs`'s `.include("../cpp/include")`, and the crate-name-baked-in path `matching-engine-sidecar/src/ffi.rs.h` inside `order_book_v2_ffi.h`) is the next most likely place for a first-build surprise. Each one so far has been a quick, targeted fix, not a redesign.
+If `cargo build` still fails, paste the compiler error back — two real bugs (namespace mismatch, circular include) have been found and fixed this way already, each a quick, targeted fix rather than a redesign.
 
 ## Correctness — differential fuzzing against the reference implementation
 

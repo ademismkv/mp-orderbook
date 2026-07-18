@@ -19,6 +19,9 @@
 // verification claims; this test only covers the C++ side.
 
 #include "order_book_v2_ffi.h"
+// Same ordering requirement as order_book_v2_ffi.cpp: OrderBookV2Ffi must
+// already be declared (by the header above) before this one's alias line.
+#include "matching-engine-sidecar/src/ffi.rs.h"
 #include <cassert>
 #include <cstdio>
 
