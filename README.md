@@ -152,9 +152,20 @@ python3 tools/capture_live_orderbook.py --product BTC-USD --seconds 60 --out liv
 
 Once you have a capture file, the natural next step is a `replay_live.cpp` sibling to `replay_lobster.cpp` (the column shapes are deliberately similar) — not yet built, since there's no captured file yet to build it against.
 
-## Rust sidecar — FFI-wired, FIX parsing, risk pre-check (not yet compiled)
+## Rust sidecar — FFI-wired, FIX parsing, risk pre-check (built, one real bug found and fixed)
 
-The dev sandbox this repo was built in has no `rustc`/`cargo` (`apt-get install` has no root, `rustup.rs` is blocked by the sandbox's network allowlist — both confirmed, not assumed). The earlier skeleton was written blind and then verified by the user locally (`cargo build` + `cargo test`, zero fixes needed). This session's work is written the same way — blind, for the user to build — but it's a bigger jump than the skeleton was, so the expectation is different: **this will probably need at least one build-fix-retry pass**, and that's fine, not a failure.
+The dev sandbox this repo was built in has no `rustc`/`cargo` (`apt-get install` has no root, `rustup.rs` is blocked by the sandbox's network allowlist — both confirmed, not assumed). The earlier skeleton was written blind and then verified by the user locally (`cargo build` + `cargo test`, zero fixes needed). This session's FFI work was also written blind, and on the first real `cargo build` (run by the user, not in this sandbox) it hit a genuine compiler error — expected, and exactly the "build-fix-retry" pass flagged below before it happened.
+
+**The bug, for the record:** `rust/src/ffi.rs` declared `#[cxx::bridge(namespace = "ffi")]`, which tells `cxx_build` to generate C++ glue code expecting the opaque `OrderBookV2Ffi` type inside `namespace ffi { ... }`. But `cpp/include/order_book_v2_ffi.h` declares `class OrderBookV2Ffi` at global scope, not inside that namespace. Real error from the user's machine:
+
+```
+error: no member named 'OrderBookV2Ffi' in namespace 'ffi'; did you mean simply 'OrderBookV2Ffi'?
+  757 |   bool (::ffi::OrderBookV2Ffi::*reduce$)(...) = &::ffi::OrderBookV2Ffi::reduce;
+../cpp/include/order_book_v2_ffi.h:30:7: note: 'OrderBookV2Ffi' declared here
+   30 | class OrderBookV2Ffi {
+```
+
+Fixed by dropping `namespace = "ffi"` from the bridge macro so cxx generates everything at global scope, matching the C++ side as written. Worth being honest about why the earlier standalone C++ verification (`cpp/tests/test_order_book_v2_ffi_standalone.cpp`, run against hand-written mock headers in `cpp/tests/ffi_mock/`) didn't catch this: those mock headers made the identical global-scope assumption, so they matched the (also wrong) C++ header instead of matching what real `cxx_build` actually generates. That test proved the C++ translation logic works; it never proved the namespace was right — only a real `cargo build` could do that.
 
 **What's here now:**
 
@@ -171,7 +182,7 @@ cargo build
 cargo test
 ```
 
-If `cargo build` fails on the first try, the most likely culprits are the `include!("order_book_v2_ffi.h")` path in `ffi.rs` resolving against `build.rs`'s `.include("../cpp/include")`, or the generated-header include path inside `order_book_v2_ffi.h` itself (`matching-engine-sidecar/src/ffi.rs.h` — the crate name is baked into that path by `cxx_build`'s convention, so a crate rename would break it). Paste the actual compiler error back and it's a quick fix, not a redesign.
+If `cargo build` still fails, paste the compiler error back — the namespace bug above is fixed, but the include-path wiring (`include!("order_book_v2_ffi.h")` in `ffi.rs` against `build.rs`'s `.include("../cpp/include")`, and the crate-name-baked-in path `matching-engine-sidecar/src/ffi.rs.h` inside `order_book_v2_ffi.h`) is the next most likely place for a first-build surprise. Each one so far has been a quick, targeted fix, not a redesign.
 
 ## Correctness — differential fuzzing against the reference implementation
 
@@ -204,7 +215,7 @@ matching-engine/
 ├── data/                 real LOBSTER sample data (see data/README.md for source)
 ├── dashboard/            index.html — live NASDAQ replay dashboard, open directly in a browser
 ├── tools/                capture_live_orderbook.py — run on your machine, not in this sandbox
-├── rust/                 sidecar — cxx FFI bridge, FIX parsing, risk pre-check (not yet compiled)
+├── rust/                 sidecar — cxx FFI bridge, FIX parsing, risk pre-check (real cargo build attempted, one bug found + fixed)
 ├── devlog/               dated entries: asked / got / kept / changed / wrong
 ├── .github/workflows/    CI: build + unit tests + differential fuzz gate + bench (informational)
 └── LICENSE               MIT
@@ -237,7 +248,7 @@ g++ -std=c++20 -O2 -Iinclude -Ibench src/order_book.cpp    bench/bench_v1.cpp -o
 g++ -std=c++20 -O2 -Iinclude -Ibench src/order_book_v2.cpp bench/bench_v2.cpp -o bench_v2 && ./bench_v2
 ```
 
-Rust sidecar (FFI-wired, unverified in this build environment — see "Rust sidecar" above):
+Rust sidecar (FFI-wired, real build attempted on the user's machine — see "Rust sidecar" above):
 ```bash
 cd rust
 cargo build
@@ -263,7 +274,7 @@ Full architecture decisions (order book data structure, threading model, Rust/C+
 2. ~~v2: array + intrusive list + arena allocator, verified against v1~~
 3. ~~Benchmark harness, fix the first real bottleneck found~~
 4. ~~Multithreading (single-writer-per-symbol, SPSC ring buffers), verified under TSan/ASan~~
-5. Rust sidecar wired up over `cxx` — FIX parsing, pre-trade risk pre-check — **written, not yet compiled** (no local `cargo` in this sandbox; needs a build-fix-retry pass on your machine, see "Rust sidecar" above)
+5. Rust sidecar wired up over `cxx` — FIX parsing, pre-trade risk pre-check — **real `cargo build` attempted on the user's machine, one genuine namespace bug found and fixed** (see "Rust sidecar" above); no local `cargo` in this sandbox, so a full `cargo test` pass is still owed
 6. Real-hardware benchmark run, replace sandbox numbers everywhere
 7. ~~Replay real market data (LOBSTER NASDAQ order-book reconstructions) through the engine~~ — done, see "Real data replay"
 8. Live data: run `tools/capture_live_orderbook.py` for real (needs your machine), build `replay_live.cpp` against the capture
