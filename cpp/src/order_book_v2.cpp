@@ -101,8 +101,7 @@ void OrderBookV2::push_back_order(int64_t level_idx, Side side, const OrderReque
 #endif
 }
 
-std::vector<Trade> OrderBookV2::match(OrderRequest& taker) {
-    std::vector<Trade> trades;
+void OrderBookV2::match(OrderRequest& taker, std::vector<Trade>& trades) {
     const bool is_buy = (taker.side == Side::Buy);
 
     while (taker.qty > 0) {
@@ -151,20 +150,20 @@ std::vector<Trade> OrderBookV2::match(OrderRequest& taker) {
             }
         }
     }
-    return trades;
 }
 
-std::vector<Trade> OrderBookV2::add(const OrderRequest& req) {
+void OrderBookV2::add(const OrderRequest& req, std::vector<Trade>& out_trades) {
+    out_trades.clear();  // reuse the caller's buffer's capacity; no allocation here
     if (req.type == Type::Cancel) {
         cancel(req.id);
-        return {};
+        return;
     }
 
     OrderRequest taker = req;
 #ifdef OBV2_PROFILE_BREAKDOWN
     const auto t_match0 = std::chrono::steady_clock::now();
 #endif
-    auto trades = match(taker);
+    match(taker, out_trades);
 #ifdef OBV2_PROFILE_BREAKDOWN
     breakdown_.match_ns += static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t_match0).count());
@@ -188,7 +187,6 @@ std::vector<Trade> OrderBookV2::add(const OrderRequest& req) {
             if (best_ask_idx_ < 0 || idx < best_ask_idx_) best_ask_idx_ = idx;
         }
     }
-    return trades;
 }
 
 bool OrderBookV2::cancel(OrderId id) {

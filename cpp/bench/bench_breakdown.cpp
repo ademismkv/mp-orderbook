@@ -49,6 +49,7 @@ int main() {
     std::uniform_int_distribution<int> qty_dist(1, 100);
 
     uint64_t next_id = 1;
+    std::vector<Trade> trades;  // reused across add() calls — see order_book_v2.h
     const auto t0 = std::chrono::steady_clock::now();
     for (int i = 0; i < N; ++i) {
         OrderRequest o;
@@ -57,7 +58,7 @@ int main() {
         o.type = Type::Limit;
         o.price = 10000 + price_offset(rng);
         o.qty = static_cast<Quantity>(qty_dist(rng));
-        book.add(o);
+        book.add(o, trades);
     }
     const auto t1 = std::chrono::steady_clock::now();
     const double add_wall_ns = static_cast<double>(

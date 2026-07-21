@@ -81,6 +81,7 @@ void run_symbol(int symbol_id, int n_ops, int core_id, SymbolStats* stats) {
     std::uniform_int_distribution<int> price_offset(-50, 50);
     std::uniform_int_distribution<int> qty_dist(1, 100);
     uint64_t next_id = 1;
+    std::vector<Trade> trades;  // reused across add() calls — see order_book_v2.h
     for (int i = 0; i < n_ops; ++i) {
         OrderRequest o;
         o.id = next_id++;
@@ -88,7 +89,7 @@ void run_symbol(int symbol_id, int n_ops, int core_id, SymbolStats* stats) {
         o.type = Type::Limit;
         o.price = 10000 + price_offset(rng);
         o.qty = static_cast<Quantity>(qty_dist(rng));
-        book.add(o);
+        book.add(o, trades);
     }
     stats->ops_done = static_cast<uint64_t>(n_ops);
 }

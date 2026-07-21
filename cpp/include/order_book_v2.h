@@ -54,7 +54,24 @@ public:
     // benchmark/demo; a production version would tune these per instrument.
     explicit OrderBookV2(uint32_t arena_capacity = 1u << 20, Price initial_window = 20000);
 
-    std::vector<Trade> add(const OrderRequest& req);
+    // Reusable-buffer form: clears out_trades, then appends this call's
+    // fills into it. The caller keeps the same vector across many add()
+    // calls, so its heap buffer is grown once (amortized) instead of a
+    // fresh allocation on every call that produces a fill — real hardware
+    // profiling (Instruments CPU Profiler, day 11) found operator new
+    // inside match()'s old by-value std::vector<Trade> return was 35% of
+    // match()'s own time. Use this form on any hot path.
+    void add(const OrderRequest& req, std::vector<Trade>& out_trades);
+
+    // Convenience form for callers that don't care about the allocation
+    // (tests, fuzzers, one-shot tools) — same behavior, but allocates a
+    // fresh vector each call. Implemented in terms of the form above.
+    std::vector<Trade> add(const OrderRequest& req) {
+        std::vector<Trade> trades;
+        add(req, trades);
+        return trades;
+    }
+
     bool cancel(OrderId id);
 
     // Partial cancellation: reduce a resting order's quantity by `delta`
@@ -140,7 +157,8 @@ private:
 
     int64_t ensure_index_for_price(Price p);   // may rebase/grow levels_
     void    push_back_order(int64_t level_idx, Side side, const OrderRequest& req);
-    std::vector<Trade> match(OrderRequest& taker);
+    // Appends fills into out_trades (does not clear it — add() owns that).
+    void    match(OrderRequest& taker, std::vector<Trade>& out_trades);
 
 #ifdef OBV2_PROFILE_BREAKDOWN
     Breakdown breakdown_;
