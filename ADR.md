@@ -37,6 +37,17 @@ Concrete decisions, not options. Each one states what to build, why, and what it
 - **Control plane** (start/stop, config, risk-limit updates, symbol subscribe/unsubscribe) — `cxx` crate, synchronous function calls. Low-frequency; correctness and ergonomics matter more than nanoseconds here.
 - **Data plane** (every order, every trade, every market-data tick) — a hand-rolled SPSC ring buffer in shared memory, cache-line padded head/tail indices. `cxx` is zero-copy for simple types but is still a function-call boundary; per-order call overhead across FFI, millions of times a second, reintroduces exactly the cost the single-writer design elsewhere is meant to avoid. `rust/src/bin/bench_ffi.rs` measures this directly — same 2,000,000-order workload as `cpp/bench/bench_v2.cpp`, but every `add()` call goes Rust -> `cxx` -> C++ instead of staying in C++, so the per-order FFI tax is a real measured number, not an assumption. Run it via `cargo run --release --bin bench_ffi`, or via `./quickstart.sh`, which runs it automatically when `cargo` is available.
 
+**Real result, measured on the user's machine (2,000,000-order workload, single thread, no other contention):**
+
+| | Pure C++ | Rust → `cxx` → C++ |
+|---|---|---|
+| Throughput | 5.523M ops/sec | 5.210M ops/sec |
+| p50 | 83ns | 84ns |
+| p99 | 500ns | 584ns |
+| p99.9 | 4334ns | 4292ns |
+
+The FFI boundary costs about 5.7% throughput and roughly 1ns at p50 — small. This is one run, not a median of several, so treat the exact figures as "roughly this," not precise to two decimals (see devlog day 9 for the full caveat, including why this doesn't change the SPSC-ring-buffer decision for the actual data plane — it measures one call's marginal cost, not the cost of millions of calls/sec under real system contention).
+
 **Open decision — now resolved:** is pre-trade risk actually synchronous-blocking on the matching thread, or an async pre-check that rejects orders before they reach the ring buffer? Resolved as the latter, and built: `rust/src/risk.rs` runs on the ingestion side (symbol allowlist, max order size, max notional, price collar in bps against the book's reference price), never on the matching thread's own critical path. 5 unit tests. Same not-yet-compiled caveat as the rest of this ADR.
 
 **Status:** FFI boundary implemented; real `cargo build` attempted on the user's machine (no `rustc`/`cargo` in this sandbox — `rustup.rs`, `static.rust-lang.org`, `crates.io` all return 403 from the sandbox's network proxy). `rust/src/ffi.rs` declares the `cxx` bridge (shared `FfiSide`/`FfiOrderType`/`FfiOrderRequest`/`FfiTrade` types, opaque `OrderBookV2Ffi` C++ type). `cpp/include/order_book_v2_ffi.h` + `cpp/src/order_book_v2_ffi.cpp` are the adapter layer — field-by-field translation into the real `::OrderRequest`/`::Trade`, deliberately never touching `OrderBookV2` itself. `rust/build.rs` compiles the bridge plus `order_book_v2.cpp` and the adapter directly via `cxx_build`, independent of the CMake build. `rust/src/lib.rs`'s `MatchingEngine` is a safe wrapper with two tests (`crosses_and_reports_a_trade`, `non_crossing_order_rests`).
