@@ -209,6 +209,7 @@ Fixed by removing that include from `order_book_v2_ffi.h` (replaced with forward
 - `rust/src/lib.rs` — `MatchingEngine`, a safe wrapper around the generated `UniquePtr<OrderBookV2Ffi>` so callers never touch `Pin`/`UniquePtr` directly. Two tests: a crossing order that produces a trade, a resting order that doesn't.
 - `rust/src/fix.rs` — FIX 4.4 inbound parser. `NewOrderSingle` (35=D), `OrderCancelRequest` (35=F), `OrderCancelReplaceRequest` (35=G) — enough to place/cancel/modify a limit order, per ADR-4's explicit scope cut. No session layer, no outbound messages. 8 unit tests.
 - `rust/src/risk.rs` — the async pre-trade risk pre-check ADR-3 left as an open decision, now resolved: runs on the ingestion side, before an order reaches the matching thread's ring buffer. Symbol allowlist, max order size, max notional, price collar (bps from a reference price). 5 unit tests.
+- `rust/src/bin/bench_ffi.rs` — the FFI cost benchmark: same workload shape as `cpp/bench/bench_v2.cpp` (2,000,000 orders, same price/qty ranges), but every call to `add()` goes Rust -> `cxx` -> C++ instead of staying in C++. This is the number that backs up ADR-3's decision to keep cxx off the hot data-plane path (SPSC ring buffer instead) — a measured tradeoff, not an assumption.
 
 ```bash
 cd rust
@@ -217,6 +218,14 @@ cargo test
 ```
 
 This is verified — the transcript above is the user's own terminal output, not a projection. If your build ever fails again (e.g. after pulling a future change), paste the compiler error back — two real bugs (namespace mismatch, circular include) have already been found and fixed this way, each a quick, targeted fix rather than a redesign.
+
+To measure the FFI cost directly:
+
+```bash
+cargo run --release --bin bench_ffi
+```
+
+Or just run `./quickstart.sh` from the repo root — it detects `cargo` automatically and runs this as its last step, folding the result straight into the summary table alongside the pure-C++ numbers.
 
 ## Correctness — differential fuzzing against the reference implementation
 
