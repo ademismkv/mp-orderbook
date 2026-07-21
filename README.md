@@ -31,7 +31,7 @@ Price-time-priority matching, one thread per symbol (single-writer principle —
 
 | Decision | Choice | Why |
 |---|---|---|
-| Order book container | Array of price levels (shared price axis) + intrusive doubly-linked list per level + arena allocator | O(1) best-bid/ask, true O(1) cancel, zero `malloc` on the hot path after construction |
+| Order book container | Array of price levels (shared price axis) + intrusive doubly-linked list per level + arena allocator + `FlatHashMap` id index (`cpp/include/flat_hash_map.h`, open addressing, backward-shift deletion — replaces `std::unordered_map`) | O(1) best-bid/ask, true O(1) cancel, zero `malloc` on the hot path after construction |
 | Threading | One matching thread per symbol, no locks on the book | Most concurrency bugs come from multiple writers on shared state — remove the shared state instead of guarding it |
 | Rust ↔ C++ boundary | `cxx` for control-plane calls, a shared-memory ring buffer for per-order data-plane traffic | Avoids per-order FFI call overhead on the hot path |
 | Prices | Integer ticks, not `double` | No float-compare bugs at price-level boundaries |
@@ -43,7 +43,7 @@ Price-time-priority matching, one thread per symbol (single-writer principle —
 | v1 — `std::map`-based order book | Correctness baseline. 5/5 tests passing. Kept permanently as the reference implementation everything else is checked against. |
 | v2 — array + intrusive list + arena | 10/10 tests passing (incl. 2 for price-window rebase, 3 for partial-cancel/`reduce()`). Verified behaviorally identical to v1 by differential fuzzing (see below). |
 | Benchmark harness | Working, dependency-free (no google-benchmark yet). |
-| Differential fuzzing | Working. v1 vs v2 checked over 1.75M+ simulated operations, zero mismatches. |
+| Differential fuzzing | Working. v1 vs v2 checked over 1.75M+ simulated operations, zero mismatches — plus a second, targeted workload (`fuzz_v1_rebase`/`fuzz_v2_rebase`, price random-walk instead of a fixed band) added specifically to force the price-level window's rebase path, which the original fixed-band workload never exercises at any seed or count. 48 total differential runs across both workloads, zero mismatches, real rebase counts up to 66 per run in the targeted one. |
 | Multithreading (ADR-1) | Implemented: SPSC ring buffer + per-symbol matching thread. Verified against the sequential reference and clean under ThreadSanitizer + AddressSanitizer (zero races, zero memory errors). Scaling measured up to 4 symbols/cores (see below). |
 | Rust sidecar | FFI-wired: `cxx` bridge to `OrderBookV2` implemented (`rust/src/ffi.rs` + `cpp/src/order_book_v2_ffi.cpp`), plus a FIX 4.4 inbound parser (`rust/src/fix.rs`, 8 tests) and an async pre-trade risk pre-check (`rust/src/risk.rs`, 5 tests). The **C++ half of the FFI adapter is compiled and tested right now, in this environment** — `cpp/tests/test_order_book_v2_ffi_standalone.cpp` builds the real, unmodified adapter against hand-written mocks of the two headers `cxx_build` would otherwise generate, proving the translation logic works without needing `cargo`. The **Rust half (the actual `cxx` bridge, plus `fix.rs`/`risk.rs`) is still not compiled** — confirmed fresh this session, not assumed: no `rustc`/`cargo`, and `rustup.rs`/`static.rust-lang.org`/`crates.io` are all still blocked by this sandbox's network allowlist (403 from the proxy on all three). See below. |
 | Real data replay | Implemented and run: 400,391 real NASDAQ order events (AAPL, full trading day) replayed through `OrderBookV2`, zero invariant violations. See below. |
@@ -67,6 +67,8 @@ Mixed `add()` workload — ~50/50 buy/sell around a moving mid, tight enough spr
 **v2 is 1.44x v1's throughput and 1.34x v1's p50, using outlier-trimmed medians** (2 of 20 v2 runs — 10% — showed a large drop, almost certainly host-level scheduling noise on this shared sandbox rather than an algorithmic issue: `taskset` pins within the guest's visible CPUs but can't guarantee the physical core isn't time-sliced by the hypervisor for other tenants). v1's run-to-run variance was much tighter (5% vs 16%) — a real observation, not just sandbox noise, discussed in `devlog/2026-07-17-day-3-rigorous-benchmark.md`.
 
 **These numbers were measured in a shared cloud sandbox, not quiet dedicated hardware — even with core pinning.** The relative comparison (v2 faster than v1, by roughly this ratio, with more variance) is probably meaningful since both ran in the same environment; the absolute numbers are not resume-ready until re-measured on real, unshared hardware. Full methodology and all 40 raw run results are in `devlog/2026-07-17-day-1-v2-bench-fuzz.md`, `devlog/2026-07-17-day-2-optimize-and-ci.md`, and `devlog/2026-07-17-day-3-rigorous-benchmark.md`.
+
+**Since replaced `std::unordered_map` with `FlatHashMap` for the id index** (open addressing, backward-shift deletion — see `cpp/include/flat_hash_map.h`) and switched the default build flag to `-O3` (see devlog day 9b). Fresh same-sandbox comparison, 3 runs each, `bench_v2`: p50 dropped from 125ns to 84ns, p99 from ~417-458ns to 375ns, throughput up from ~4.9-5.1M to ~5.8-6.0M ops/sec. Same sandbox-noise caveat as above applies — this is a real, repeatable improvement measured here, not a resume-ready absolute number until re-measured on real hardware. Full story, including two real mistakes found and fixed while building the map (a scrambling hash that hurt cache locality on real sequential order ids, and a tombstone-compaction scheme that caused real 40-60ms stalls), in `cpp/include/flat_hash_map.h`'s own comments and `devlog/2026-07-22-day-10-flat-hash-map-and-rebase-verification.md`.
 
 Target: sub-microsecond p99, benchmarked against LMAX's published 2011 number (100K TPS at <1ms mean) as a reference point — not because 15-year-old hardware is a high bar, but because it's a well-known, citable comparison.
 
@@ -255,11 +257,13 @@ matching-engine/
 ├── quickstart.sh         one command: build everything, run everything, see real numbers
 ├── Dockerfile            same thing, zero local setup — docker build && docker run
 ├── cpp/
-│   ├── include/        order.h (v1) / order_book_v2.h / spsc_ring.h — public types + class decls
+│   ├── include/        order.h (v1) / order_book_v2.h / spsc_ring.h / flat_hash_map.h — public types + class decls
 │   ├── src/             order_book.cpp (v1) / order_book_v2.cpp
 │   ├── tests/           unit tests + test_threaded.cpp, run via ctest or directly
-│   ├── bench/            dependency-free latency/throughput harness
-│   ├── fuzz/             differential fuzz (v1 vs v2), shared workload generator
+│   ├── bench/            dependency-free latency/throughput harness, bench_breakdown.cpp (per-phase add() timing),
+│   │                     perf_stat.sh + bench_threaded_pinned.cpp — hardware-counter/pinning tools for real hardware
+│   ├── fuzz/             differential fuzz (v1 vs v2) — fixed-band workload + a price-random-walk workload
+│   │                     added specifically to force the price-window rebase path (fuzz_v1_rebase/fuzz_v2_rebase)
 │   ├── tools/            replay_lobster.cpp — real NASDAQ data replay
 │   │                     replay_lobster_batched.cpp — same, per-batch timing for the dashboard
 │   └── CMakeLists.txt
