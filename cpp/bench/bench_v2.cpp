@@ -38,5 +38,6 @@ int main() {
 
     print_percentiles("v2(add)", latencies_ns, N, wall);
     std::printf("final depth=%zu\n", book.depth());
+    std::printf("levels_ growth/rebase events: %llu\n", (unsigned long long)book.level_array_growths());
     return 0;
 }

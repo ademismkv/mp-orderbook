@@ -38,9 +38,9 @@ echo "Building and running mp-orderbook (use --verbose for full raw output)..."
 echo
 
 step "[1/6] building v1 + v2..."
-g++ -std=c++20 -O2 -Wall -Wextra -I"$CPP/include" \
+g++ -std=c++20 -O3 -Wall -Wextra -I"$CPP/include" \
     "$CPP/src/order_book.cpp" "$CPP/tests/test_order_book.cpp" -o "$BUILD/test_v1"
-g++ -std=c++20 -O2 -Wall -Wextra -I"$CPP/include" \
+g++ -std=c++20 -O3 -Wall -Wextra -I"$CPP/include" \
     "$CPP/src/order_book_v2.cpp" "$CPP/tests/test_order_book_v2.cpp" -o "$BUILD/test_v2"
 
 step "[2/6] unit tests..."
@@ -48,19 +48,19 @@ TEST_V1_OUT="$("$BUILD/test_v1")"
 TEST_V2_OUT="$("$BUILD/test_v2")"
 
 step "[3/6] single-thread benchmark (2,000,000 ops)..."
-g++ -std=c++20 -O2 -I"$CPP/include" -I"$CPP/bench" \
+g++ -std=c++20 -O3 -I"$CPP/include" -I"$CPP/bench" \
     "$CPP/src/order_book_v2.cpp" "$CPP/bench/bench_v2.cpp" -o "$BUILD/bench_v2"
 BENCH_OUT="$("$BUILD/bench_v2")"
 [[ $VERBOSE -eq 1 ]] && echo "$BENCH_OUT"
 
 step "[4/6] multithreaded scaling (1..4 symbols, 1,000,000 ops/symbol)..."
-g++ -std=c++20 -O2 -pthread -I"$CPP/include" \
+g++ -std=c++20 -O3 -pthread -I"$CPP/include" \
     "$CPP/src/order_book_v2.cpp" "$CPP/bench/bench_threaded_scaling.cpp" -o "$BUILD/bench_threaded"
 THREAD_OUT="$("$BUILD/bench_threaded" 4 1000000)"
 [[ $VERBOSE -eq 1 ]] && echo "$THREAD_OUT"
 
 step "[5/6] replaying the real NASDAQ AAPL trading day (400,391 real events)..."
-g++ -std=c++20 -O2 -I"$CPP/include" \
+g++ -std=c++20 -O3 -I"$CPP/include" \
     "$CPP/src/order_book_v2.cpp" "$CPP/tools/replay_lobster.cpp" -o "$BUILD/replay_lobster"
 REPLAY_OUT="$("$BUILD/replay_lobster" "$ROOT/data/AAPL_2012-06-21_34200000_57600000_message_10.csv")"
 [[ $VERBOSE -eq 1 ]] && echo "$REPLAY_OUT"

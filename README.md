@@ -70,6 +70,14 @@ Mixed `add()` workload — ~50/50 buy/sell around a moving mid, tight enough spr
 
 Target: sub-microsecond p99, benchmarked against LMAX's published 2011 number (100K TPS at <1ms mean) as a reference point — not because 15-year-old hardware is a high bar, but because it's a well-known, citable comparison.
 
+### Where does the time actually go? Two tools for your own machine
+
+The numbers above answer "how fast," not "why." These two answer "why" — but they need real, unshared hardware to mean anything, which this dev sandbox isn't, so they're written to be run on yours, not something I can produce a trustworthy number for myself.
+
+- **`cpp/bench/perf_stat.sh`** — real hardware counters (cycles, instructions, IPC, L1/LLC cache misses, branch misses) via Linux's `perf stat`, run against `bench_v2`. `perf` is Linux-only — there's no equivalent CLI tool on macOS. If you're on a Mac, the script prints two options: try it inside Docker (`docker run --rm --privileged mp-orderbook ...`, not guaranteed to have kernel permission even then), or use Xcode's **Instruments** app with the "CPU Counters" template, which reads your M-series chip's real PMU — GUI-only, no scriptable CLI equivalent, but it's the actual native tool for this on macOS. Full steps are in the script's header comment.
+
+- **`cpp/bench/bench_threaded_pinned.cpp`** — the same multithreaded scaling test as `bench_threaded_scaling.cpp`, but each thread is pinned to a specific core first, to test whether the non-monotonic scaling you've seen (4-symbol aggregate dropping below 3-symbol, across multiple real runs) is scheduler placement rather than anything in the code — there's zero shared state between symbol threads here, so a scaling drop can't be a synchronization bug. Compile and run: `g++ -std=c++20 -O3 -pthread -Iinclude src/order_book_v2.cpp bench/bench_threaded_pinned.cpp -o bench_pinned && ./bench_pinned`. Honest platform caveat baked into the code and its own output: pinning is a hard kernel guarantee on Linux (`pthread_setaffinity_np`), but only an advisory hint on macOS (`thread_policy_set`) — Apple's own docs say so, and Apple Silicon's P-core/E-core scheduler doesn't expose real placement control. A "no difference" result on your Mac is inconclusive, not proof pinning doesn't matter; a real answer to that question needs a Linux machine.
+
 ## Threading (ADR-1)
 
 One matching thread per symbol, each owning its own `OrderBookV2` — no locks on the book, only an `SpscRingBuffer` (`cpp/include/spsc_ring.h`, cache-line padded head/tail) feeding orders in and trades out.
@@ -78,7 +86,7 @@ One matching thread per symbol, each owning its own `OrderBookV2` — no locks o
 
 ```bash
 cd cpp
-g++ -std=c++20 -O2 -pthread -Iinclude -Ifuzz src/order_book_v2.cpp tests/test_threaded.cpp -o test_threaded && ./test_threaded 42 200000
+g++ -std=c++20 -O3 -pthread -Iinclude -Ifuzz src/order_book_v2.cpp tests/test_threaded.cpp -o test_threaded && ./test_threaded 42 200000
 g++ -std=c++20 -O1 -g -fsanitize=thread -pthread -Iinclude -Ifuzz src/order_book_v2.cpp tests/test_threaded.cpp -o test_threaded_tsan && ./test_threaded_tsan 42 5000
 g++ -std=c++20 -O1 -g -fsanitize=address,undefined -pthread -Iinclude -Ifuzz src/order_book_v2.cpp tests/test_threaded.cpp -o test_threaded_asan && ./test_threaded_asan 42 200000
 ```
@@ -100,7 +108,7 @@ Measured on a 4-core sandbox (`std::thread::hardware_concurrency() == 4`) — sc
 
 ```bash
 cd cpp
-g++ -std=c++20 -O2 -Iinclude src/order_book_v2.cpp tools/replay_lobster.cpp -o replay_lobster
+g++ -std=c++20 -O3 -Iinclude src/order_book_v2.cpp tools/replay_lobster.cpp -o replay_lobster
 ./replay_lobster ../data/AAPL_2012-06-21_34200000_57600000_message_10.csv
 ```
 
@@ -130,7 +138,7 @@ Also on the page: freshly re-measured real multithreading scaling numbers (media
 To regenerate the embedded batch data yourself:
 ```bash
 cd cpp
-g++ -std=c++20 -O2 -Iinclude src/order_book_v2.cpp tools/replay_lobster_batched.cpp -o replay_batched
+g++ -std=c++20 -O3 -Iinclude src/order_book_v2.cpp tools/replay_lobster_batched.cpp -o replay_batched
 ./replay_batched ../data/AAPL_2012-06-21_34200000_57600000_message_10.csv 10000
 ```
 
@@ -235,8 +243,8 @@ Current coverage: 31 runs (10 seeds x 3 op-counts, plus one 1,000,000-op run) = 
 
 ```bash
 cd cpp
-g++ -std=c++20 -O2 -Iinclude -Ifuzz src/order_book.cpp fuzz/fuzz_v1.cpp -o fuzz_v1
-g++ -std=c++20 -O2 -Iinclude -Ifuzz src/order_book_v2.cpp fuzz/fuzz_v2.cpp -o fuzz_v2
+g++ -std=c++20 -O3 -Iinclude -Ifuzz src/order_book.cpp fuzz/fuzz_v1.cpp -o fuzz_v1
+g++ -std=c++20 -O3 -Iinclude -Ifuzz src/order_book_v2.cpp fuzz/fuzz_v2.cpp -o fuzz_v2
 diff <(./fuzz_v1 42 1000000) <(./fuzz_v2 42 1000000) && echo "match"
 ```
 
@@ -281,15 +289,21 @@ ctest --output-on-failure       # runs both v1 and v2 unit test suites
 Or without CMake:
 ```bash
 cd cpp
-g++ -std=c++20 -O2 -Wall -Wextra -Iinclude src/order_book.cpp    tests/test_order_book.cpp    -o test_v1 && ./test_v1
-g++ -std=c++20 -O2 -Wall -Wextra -Iinclude src/order_book_v2.cpp tests/test_order_book_v2.cpp -o test_v2 && ./test_v2
+g++ -std=c++20 -O3 -Wall -Wextra -Iinclude src/order_book.cpp    tests/test_order_book.cpp    -o test_v1 && ./test_v1
+g++ -std=c++20 -O3 -Wall -Wextra -Iinclude src/order_book_v2.cpp tests/test_order_book_v2.cpp -o test_v2 && ./test_v2
 ```
 
 Benchmark:
 ```bash
-g++ -std=c++20 -O2 -Iinclude -Ibench src/order_book.cpp    bench/bench_v1.cpp -o bench_v1 && ./bench_v1
-g++ -std=c++20 -O2 -Iinclude -Ibench src/order_book_v2.cpp bench/bench_v2.cpp -o bench_v2 && ./bench_v2
+g++ -std=c++20 -O3 -Iinclude -Ibench src/order_book.cpp    bench/bench_v1.cpp -o bench_v1 && ./bench_v1
+g++ -std=c++20 -O3 -Iinclude -Ibench src/order_book_v2.cpp bench/bench_v2.cpp -o bench_v2 && ./bench_v2
 ```
+
+Per-phase breakdown of `add()` — where the time actually goes (matching loop vs. price-level lookup vs. arena alloc vs. FIFO linking vs. the `index_` hash-map insert), real `std::chrono` samples, opt-in and zero-cost in every other build:
+```bash
+g++ -std=c++20 -O3 -DOBV2_PROFILE_BREAKDOWN -Iinclude -Ibench src/order_book_v2.cpp bench/bench_breakdown.cpp -o bench_breakdown && ./bench_breakdown
+```
+Real result, measured here: `match()` ~27% of wall time, the `index_` insert ~13-14% (second biggest phase, and roughly double arena allocation/FIFO linking/price-level lookup, each ~6-7%) — see `devlog/2026-07-22-day-10-phase-breakdown-and-levels-growth.md` for the full numbers and the honest caveat about what this instrumented build's own overhead does to its absolute (not relative) timing.
 
 Rust sidecar (compiled + tested on the user's machine, 15/15 passing — see "Rust sidecar" above):
 ```bash

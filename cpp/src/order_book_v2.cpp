@@ -43,6 +43,7 @@ int64_t OrderBookV2::ensure_index_for_price(Price p) {
         // triggered when price moves outside the current window — but O(n)
         // in open orders when it does. See ADR-2's noted tradeoff.
         int64_t shift = -idx + (initial_window_ / 4) + 1;
+        ++level_array_growths_;
         std::vector<PriceLevel> grown(levels_.size() + static_cast<size_t>(shift));
         for (size_t i = 0; i < levels_.size(); ++i) {
             grown[i + static_cast<size_t>(shift)] = levels_[i];
@@ -51,16 +52,26 @@ int64_t OrderBookV2::ensure_index_for_price(Price p) {
         base_ -= shift;
         if (best_bid_idx_ >= 0) best_bid_idx_ += shift;
         if (best_ask_idx_ >= 0) best_ask_idx_ += shift;
-        for (auto& kv : index_) kv.second.level_idx += shift;
+        index_.for_each_mut([shift](auto& kv) { kv.second.level_idx += shift; });
         idx = p - base_;
     } else if (idx >= static_cast<int64_t>(levels_.size())) {
+        ++level_array_growths_;
         levels_.resize(static_cast<size_t>(idx) + static_cast<size_t>(initial_window_ / 4) + 1);
     }
     return idx;
 }
 
 void OrderBookV2::push_back_order(int64_t level_idx, Side side, const OrderRequest& req) {
+#ifdef OBV2_PROFILE_BREAKDOWN
+    const auto t_alloc0 = std::chrono::steady_clock::now();
+#endif
     uint32_t node_idx = alloc_node();
+#ifdef OBV2_PROFILE_BREAKDOWN
+    breakdown_.arena_alloc_ns += static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t_alloc0).count());
+    breakdown_.arena_alloc_calls++;
+    const auto t_fifo0 = std::chrono::steady_clock::now();
+#endif
     Node& n = arena_[node_idx];
     n.id = req.id;
     n.qty = req.qty;
@@ -76,7 +87,18 @@ void OrderBookV2::push_back_order(int64_t level_idx, Side side, const OrderReque
         lvl.tail = node_idx;
     }
     lvl.total_qty += req.qty;
+#ifdef OBV2_PROFILE_BREAKDOWN
+    breakdown_.fifo_link_ns += static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t_fifo0).count());
+    breakdown_.fifo_link_calls++;
+    const auto t_idx0 = std::chrono::steady_clock::now();
+#endif
     index_[req.id] = IndexEntry{side, level_idx, node_idx};
+#ifdef OBV2_PROFILE_BREAKDOWN
+    breakdown_.index_insert_ns += static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t_idx0).count());
+    breakdown_.index_insert_calls++;
+#endif
 }
 
 std::vector<Trade> OrderBookV2::match(OrderRequest& taker) {
@@ -139,10 +161,26 @@ std::vector<Trade> OrderBookV2::add(const OrderRequest& req) {
     }
 
     OrderRequest taker = req;
+#ifdef OBV2_PROFILE_BREAKDOWN
+    const auto t_match0 = std::chrono::steady_clock::now();
+#endif
     auto trades = match(taker);
+#ifdef OBV2_PROFILE_BREAKDOWN
+    breakdown_.match_ns += static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t_match0).count());
+    breakdown_.match_calls++;
+#endif
 
     if (taker.type == Type::Limit && taker.qty > 0) {
+#ifdef OBV2_PROFILE_BREAKDOWN
+        const auto t_ensure0 = std::chrono::steady_clock::now();
+#endif
         int64_t idx = ensure_index_for_price(taker.price);
+#ifdef OBV2_PROFILE_BREAKDOWN
+        breakdown_.ensure_index_ns += static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t_ensure0).count());
+        breakdown_.ensure_index_calls++;
+#endif
         push_back_order(idx, taker.side, taker);
         if (taker.side == Side::Buy) {
             if (best_bid_idx_ < 0 || idx > best_bid_idx_) best_bid_idx_ = idx;
@@ -168,7 +206,7 @@ bool OrderBookV2::cancel(OrderId id) {
     lvl.total_qty -= n.qty;
 
     free_node(node_idx);
-    index_.erase(it);
+    index_.erase(id);
 
     if (lvl.head == kNil) {
         if (side == Side::Buy && level_idx == best_bid_idx_) {

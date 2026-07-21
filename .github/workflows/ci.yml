@@ -13,12 +13,12 @@ jobs:
       - name: build v1 + v2 (direct g++, no CMake dependency needed)
         working-directory: cpp
         run: |
-          g++ -std=c++20 -O2 -Wall -Wextra -Iinclude src/order_book.cpp tests/test_order_book.cpp -o test_v1
-          g++ -std=c++20 -O2 -Wall -Wextra -Iinclude src/order_book_v2.cpp tests/test_order_book_v2.cpp -o test_v2
-          g++ -std=c++20 -O2 -Iinclude -Ibench src/order_book.cpp bench/bench_v1.cpp -o bench_v1
-          g++ -std=c++20 -O2 -Iinclude -Ibench src/order_book_v2.cpp bench/bench_v2.cpp -o bench_v2
-          g++ -std=c++20 -O2 -Iinclude -Ifuzz src/order_book.cpp fuzz/fuzz_v1.cpp -o fuzz_v1
-          g++ -std=c++20 -O2 -Iinclude -Ifuzz src/order_book_v2.cpp fuzz/fuzz_v2.cpp -o fuzz_v2
+          g++ -std=c++20 -O3 -Wall -Wextra -Iinclude src/order_book.cpp tests/test_order_book.cpp -o test_v1
+          g++ -std=c++20 -O3 -Wall -Wextra -Iinclude src/order_book_v2.cpp tests/test_order_book_v2.cpp -o test_v2
+          g++ -std=c++20 -O3 -Iinclude -Ibench src/order_book.cpp bench/bench_v1.cpp -o bench_v1
+          g++ -std=c++20 -O3 -Iinclude -Ibench src/order_book_v2.cpp bench/bench_v2.cpp -o bench_v2
+          g++ -std=c++20 -O3 -Iinclude -Ifuzz src/order_book.cpp fuzz/fuzz_v1.cpp -o fuzz_v1
+          g++ -std=c++20 -O3 -Iinclude -Ifuzz src/order_book_v2.cpp fuzz/fuzz_v2.cpp -o fuzz_v2
 
       - name: unit tests (must pass)
         working-directory: cpp

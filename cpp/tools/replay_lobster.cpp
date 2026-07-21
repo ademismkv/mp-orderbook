@@ -169,6 +169,8 @@ int main(int argc, char** argv) {
         (unsigned long long)reduce_misses, (unsigned long long)cancel_misses);
     std::printf("final state: depth=%zu best_bid=%lld best_ask=%lld\n",
         book.depth(), (long long)book.best_bid(), (long long)book.best_ask());
+    std::printf("levels_ growth/rebase events (O(n)-in-open-orders path, ADR-2): %llu\n",
+        (unsigned long long)book.level_array_growths());
 
     return (invariant_violations == 0) ? 0 : 1;
 }
