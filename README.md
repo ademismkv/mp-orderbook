@@ -152,9 +152,32 @@ python3 tools/capture_live_orderbook.py --product BTC-USD --seconds 60 --out liv
 
 Once you have a capture file, the natural next step is a `replay_live.cpp` sibling to `replay_lobster.cpp` (the column shapes are deliberately similar) — not yet built, since there's no captured file yet to build it against.
 
-## Rust sidecar — FFI-wired, FIX parsing, risk pre-check (built, one real bug found and fixed)
+## Rust sidecar — FFI-wired, FIX parsing, risk pre-check (compiled and tested: 15/15 passing)
 
-The dev sandbox this repo was built in has no `rustc`/`cargo` (`apt-get install` has no root, `rustup.rs` is blocked by the sandbox's network allowlist — both confirmed, not assumed). The earlier skeleton was written blind and then verified by the user locally (`cargo build` + `cargo test`, zero fixes needed). This session's FFI work was also written blind, and on the first real `cargo build` (run by the user, not in this sandbox) it hit a genuine compiler error — expected, and exactly the "build-fix-retry" pass flagged below before it happened.
+The dev sandbox this repo was built in has no `rustc`/`cargo` (`apt-get install` has no root, `rustup.rs` is blocked by the sandbox's network allowlist — both confirmed, not assumed), so this crate has only ever been built and tested on the user's own machine. It took two real build-fix-retry passes to get there (both documented below), and the third attempt — `cargo build` followed by `cargo test` — came back fully green:
+
+```
+running 15 tests
+test fix::tests::parses_cancel_replace_request ... ok
+test fix::tests::parses_market_order_with_no_price ... ok
+test fix::tests::accepts_real_soh_delimiter ... ok
+test fix::tests::parses_cancel_request ... ok
+test fix::tests::parses_new_order_single_limit_buy ... ok
+test fix::tests::rejects_empty_message ... ok
+test fix::tests::rejects_missing_required_tag ... ok
+test fix::tests::rejects_unknown_msg_type ... ok
+test risk::tests::accepts_order_within_all_limits ... ok
+test risk::tests::rejects_disallowed_symbol ... ok
+test risk::tests::rejects_price_outside_collar ... ok
+test risk::tests::rejects_oversized_order ... ok
+test risk::tests::skips_collar_check_with_no_reference_price ... ok
+test tests::non_crossing_order_rests ... ok
+test tests::crosses_and_reports_a_trade ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+The last two — `crosses_and_reports_a_trade` and `non_crossing_order_rests` — are the ones that matter most: they call `MatchingEngine`, which goes through the real, compiled `cxx` bridge into the real `OrderBookV2Ffi` C++ adapter and back. That's the whole Rust↔C++ boundary (ADR-3) exercised end to end, not the mock-header standalone test — first time that's been true.
 
 **The bug, for the record:** `rust/src/ffi.rs` declared `#[cxx::bridge(namespace = "ffi")]`, which tells `cxx_build` to generate C++ glue code expecting the opaque `OrderBookV2Ffi` type inside `namespace ffi { ... }`. But `cpp/include/order_book_v2_ffi.h` declares `class OrderBookV2Ffi` at global scope, not inside that namespace. Real error from the user's machine:
 
@@ -193,7 +216,7 @@ cargo build
 cargo test
 ```
 
-If `cargo build` still fails, paste the compiler error back — two real bugs (namespace mismatch, circular include) have been found and fixed this way already, each a quick, targeted fix rather than a redesign.
+This is verified — the transcript above is the user's own terminal output, not a projection. If your build ever fails again (e.g. after pulling a future change), paste the compiler error back — two real bugs (namespace mismatch, circular include) have already been found and fixed this way, each a quick, targeted fix rather than a redesign.
 
 ## Correctness — differential fuzzing against the reference implementation
 
@@ -226,7 +249,7 @@ matching-engine/
 ├── data/                 real LOBSTER sample data (see data/README.md for source)
 ├── dashboard/            index.html — live NASDAQ replay dashboard, open directly in a browser
 ├── tools/                capture_live_orderbook.py — run on your machine, not in this sandbox
-├── rust/                 sidecar — cxx FFI bridge, FIX parsing, risk pre-check (real cargo build attempted, one bug found + fixed)
+├── rust/                 sidecar — cxx FFI bridge, FIX parsing, risk pre-check (compiled + tested, 15/15 passing)
 ├── devlog/               dated entries: asked / got / kept / changed / wrong
 ├── .github/workflows/    CI: build + unit tests + differential fuzz gate + bench (informational)
 └── LICENSE               MIT
@@ -259,7 +282,7 @@ g++ -std=c++20 -O2 -Iinclude -Ibench src/order_book.cpp    bench/bench_v1.cpp -o
 g++ -std=c++20 -O2 -Iinclude -Ibench src/order_book_v2.cpp bench/bench_v2.cpp -o bench_v2 && ./bench_v2
 ```
 
-Rust sidecar (FFI-wired, real build attempted on the user's machine — see "Rust sidecar" above):
+Rust sidecar (compiled + tested on the user's machine, 15/15 passing — see "Rust sidecar" above):
 ```bash
 cd rust
 cargo build
@@ -285,7 +308,7 @@ Full architecture decisions (order book data structure, threading model, Rust/C+
 2. ~~v2: array + intrusive list + arena allocator, verified against v1~~
 3. ~~Benchmark harness, fix the first real bottleneck found~~
 4. ~~Multithreading (single-writer-per-symbol, SPSC ring buffers), verified under TSan/ASan~~
-5. Rust sidecar wired up over `cxx` — FIX parsing, pre-trade risk pre-check — **real `cargo build` attempted on the user's machine, one genuine namespace bug found and fixed** (see "Rust sidecar" above); no local `cargo` in this sandbox, so a full `cargo test` pass is still owed
+5. Rust sidecar wired up over `cxx` — FIX parsing, pre-trade risk pre-check — **compiled and tested on the user's machine, 15/15 tests passing**, including two live tests through the real `cxx` bridge (see "Rust sidecar" above)
 6. Real-hardware benchmark run, replace sandbox numbers everywhere
 7. ~~Replay real market data (LOBSTER NASDAQ order-book reconstructions) through the engine~~ — done, see "Real data replay"
 8. Live data: run `tools/capture_live_orderbook.py` for real (needs your machine), build `replay_live.cpp` against the capture
