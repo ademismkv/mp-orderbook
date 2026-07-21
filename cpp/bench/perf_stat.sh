@@ -26,10 +26,13 @@
 #      down than a shared corporate sandbox):
 #        docker build -t mp-orderbook .
 #        docker run --rm --privileged mp-orderbook bash -c \
-#          "apt-get update -qq && apt-get install -y -qq linux-perf && cd cpp/bench && ./perf_stat.sh"
-#      If perf still refuses to run (permission denied even as root), that's
-#      the VM's kernel denying it, not this script — Instruments is the
-#      fallback that always works on a Mac.
+#          "apt-get update -qq && apt-get install -y -qq linux-tools-common linux-tools-generic && cd cpp/bench && ./perf_stat.sh"
+#      Even if that installs cleanly, perf inside Docker containers commonly
+#      still fails with something like "perf not found for kernel X.X.X" —
+#      the installed binary is tied to a specific kernel build, and Docker
+#      Desktop's VM kernel usually doesn't match any apt-packaged perf
+#      version. If you hit that, it's a real, known Docker+perf limitation,
+#      not a bug in this script — Instruments is the reliable fallback.
 set -e
 
 if [[ "$(uname -s)" != "Linux" ]]; then
