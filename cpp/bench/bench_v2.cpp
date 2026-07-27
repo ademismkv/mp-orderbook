@@ -18,6 +18,7 @@ int main() {
     latencies_ns.reserve(N);
 
     uint64_t next_id = 1;
+    std::vector<Trade> trades;  // reused across add() calls — see order_book_v2.h
     const auto t0 = std::chrono::steady_clock::now();
     for (int i = 0; i < N; ++i) {
         OrderRequest o;
@@ -28,7 +29,7 @@ int main() {
         o.qty = static_cast<Quantity>(qty_dist(rng));
 
         const auto s = std::chrono::steady_clock::now();
-        book.add(o);
+        book.add(o, trades);
         const auto e = std::chrono::steady_clock::now();
         latencies_ns.push_back(
             static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(e - s).count()));

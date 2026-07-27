@@ -34,10 +34,10 @@ rust::Vec<FfiTrade> OrderBookV2Ffi::add(FfiOrderRequest req) {
         req.qty,
     };
 
-    std::vector<Trade> trades = inner_.add(native);
+    inner_.add(native, trades_scratch_);
 
     rust::Vec<FfiTrade> out;
-    for (const auto& t : trades) {
+    for (const auto& t : trades_scratch_) {
         out.push_back(FfiTrade{ t.maker_id, t.taker_id, t.price, t.qty });
     }
     return out;

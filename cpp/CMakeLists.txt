@@ -9,6 +9,19 @@ endif()
 
 add_compile_options(-Wall -Wextra)
 
+# Cross-TU inlining + native codegen. Neither changes any observable
+# behavior (verified: 10/10 v2 unit tests, 8/8 differential fuzz seeds
+# byte-identical vs. a non-LTO/non-native build, threaded pipeline still
+# matches the sequential reference under plain and TSan builds — see
+# devlog). Measured ~5% throughput gain on a 2M-op single-thread run;
+# -march=native trades portability of the built binary for this, which is
+# fine for a benchmark/demo target built and run on the same machine.
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+  set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+  add_compile_options(-march=native)
+  add_link_options(-march=native)
+endif()
+
 add_library(order_book src/order_book.cpp)
 target_include_directories(order_book PUBLIC include)
 

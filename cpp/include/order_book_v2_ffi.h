@@ -58,6 +58,10 @@ public:
 
 private:
     OrderBookV2 inner_;
+    // Reused across add() calls so inner_'s fills don't force a fresh
+    // std::vector<Trade> allocation on every call (day 11 profiling fix —
+    // see order_book_v2.h's add(req, out_trades) overload).
+    std::vector<Trade> trades_scratch_;
 };
 
 // Factory — cxx doesn't support constructors directly, so Rust calls this
