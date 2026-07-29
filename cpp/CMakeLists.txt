@@ -54,6 +54,16 @@ add_executable(fuzz_v2 fuzz/fuzz_v2.cpp)
 target_include_directories(fuzz_v2 PRIVATE fuzz)
 target_link_libraries(fuzz_v2 PRIVATE order_book_v2)
 
+# Feed Handler: real Nasdaq TotalView-ITCH 5.0 message parsing. Separate
+# library from order_book — this stage doesn't know about OrderBookV2 yet
+# (see ROADMAP.md V3 for the Sequencer/Risk stages that will sit between
+# the two).
+add_library(itch_feed feed/itch_parser.cpp)
+target_include_directories(itch_feed PUBLIC feed)
+
+add_executable(test_itch_parser feed/tests/test_itch_parser.cpp)
+target_link_libraries(test_itch_parser PRIVATE itch_feed)
+
 find_package(Threads REQUIRED)
 
 # ADR-1: producer -> SPSC ring -> matching thread -> SPSC ring -> consumer,
@@ -90,3 +100,6 @@ add_test(NAME basic COMMAND test_order_book)
 add_test(NAME basic_v2 COMMAND test_order_book_v2)
 add_test(NAME threaded COMMAND test_threaded)
 add_test(NAME ffi_adapter_standalone COMMAND test_order_book_v2_ffi_standalone)
+# Runs from the build directory by default via CTest's WORKING_DIRECTORY,
+# so point it at the real data file relative to the repo root.
+add_test(NAME itch_parser_real_data COMMAND test_itch_parser "${CMAKE_SOURCE_DIR}/../data/itch50_sample_20191230.bin")
