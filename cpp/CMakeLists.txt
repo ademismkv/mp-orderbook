@@ -65,7 +65,7 @@ target_link_libraries(fuzz_v2 PRIVATE order_book_v2)
 # compiled or measured, the thing this repo has avoided everywhere else).
 # Only built/tested on ARM so a clone on x86 still builds clean instead of
 # failing on a missing header.
-set(ITCH_FEED_SOURCES feed/itch_parser.cpp feed/sequencer.cpp)
+set(ITCH_FEED_SOURCES feed/itch_parser.cpp feed/sequencer.cpp feed/risk.cpp)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
   list(APPEND ITCH_FEED_SOURCES feed/itch_simd_neon.cpp)
   set(ITCH_HAVE_NEON ON)
