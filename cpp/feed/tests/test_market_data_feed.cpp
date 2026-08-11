@@ -36,7 +36,7 @@ constexpr const char* kGroup = "239.255.13.38";
 constexpr uint16_t kMcastPort = 17341;
 constexpr uint16_t kRequestServerPort = 17342;
 constexpr uint16_t kClientReplyPort = 17343;
-constexpr size_t kEventsPerPacket = 20;
+constexpr size_t kEventsPerPacket = 150;
 constexpr int kNumDrops = 5;
 
 int g_failures = 0;
