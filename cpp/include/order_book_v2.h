@@ -117,6 +117,15 @@ public:
 
 private:
     static constexpr uint32_t kNil = UINT32_MAX;
+    // Hard ceiling on levels_'s size, independent of initial_window_ —
+    // guards ensure_index_for_price() against an unbounded allocation
+    // from a single bad/sentinel-valued price (real orders shouldn't be
+    // able to OOM a shard; see order_book_v2.cpp and devlog day 17).
+    // 16.7M levels is generous for any legitimate single-instrument
+    // window (existing tools use initial_window=20000 and never grow at
+    // all) while still bounding worst case to ~268MB (levels_'s
+    // PriceLevel is 16 bytes) instead of tens of gigabytes.
+    static constexpr size_t kMaxLevels = 1u << 24;
 
     struct Node {                    // intrusive list node, lives in the arena
         OrderId  id = 0;

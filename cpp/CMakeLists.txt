@@ -65,7 +65,7 @@ target_link_libraries(fuzz_v2 PRIVATE order_book_v2)
 # compiled or measured, the thing this repo has avoided everywhere else).
 # Only built/tested on ARM so a clone on x86 still builds clean instead of
 # failing on a missing header.
-set(ITCH_FEED_SOURCES feed/itch_parser.cpp)
+set(ITCH_FEED_SOURCES feed/itch_parser.cpp feed/sequencer.cpp)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
   list(APPEND ITCH_FEED_SOURCES feed/itch_simd_neon.cpp)
   set(ITCH_HAVE_NEON ON)
@@ -75,6 +75,10 @@ endif()
 
 add_library(itch_feed ${ITCH_FEED_SOURCES})
 target_include_directories(itch_feed PUBLIC feed)
+# sequencer.cpp is the Feed -> Sequencer -> Order Books wiring (ROADMAP.md
+# V3) — it's the first thing in cpp/feed/ that actually depends on
+# OrderBookV2, so itch_feed needs the engine's headers/library too.
+target_link_libraries(itch_feed PUBLIC order_book_v2)
 
 add_executable(test_itch_parser feed/tests/test_itch_parser.cpp)
 target_link_libraries(test_itch_parser PRIVATE itch_feed)
@@ -89,6 +93,10 @@ if(ITCH_HAVE_NEON)
   add_executable(test_itch_simd_neon feed/tests/test_itch_simd_neon.cpp)
   target_link_libraries(test_itch_simd_neon PRIVATE itch_feed)
 endif()
+
+# Feed -> Sequencer -> Order Books, the wiring ROADMAP.md's V3 called for.
+add_executable(test_sequencer_wiring feed/tests/test_sequencer_wiring.cpp)
+target_link_libraries(test_sequencer_wiring PRIVATE itch_feed)
 
 find_package(Threads REQUIRED)
 # Real UDP multicast + unicast retransmission over loopback — genuine
@@ -143,3 +151,4 @@ add_test(NAME udp_multicast_e2e COMMAND test_udp_multicast_e2e "${CMAKE_SOURCE_D
 if(ITCH_HAVE_NEON)
   add_test(NAME itch_simd_neon COMMAND test_itch_simd_neon "${CMAKE_SOURCE_DIR}/../data/itch50_sample_20191230.bin")
 endif()
+add_test(NAME sequencer_wiring COMMAND test_sequencer_wiring "${CMAKE_SOURCE_DIR}/../data/itch50_sample_20191230.bin")

@@ -43,6 +43,12 @@ int64_t OrderBookV2::ensure_index_for_price(Price p) {
         // triggered when price moves outside the current window — but O(n)
         // in open orders when it does. See ADR-2's noted tradeoff.
         int64_t shift = -idx + (initial_window_ / 4) + 1;
+        if (levels_.size() + static_cast<size_t>(shift) > kMaxLevels) {
+            throw std::runtime_error(
+                "OrderBookV2::ensure_index_for_price: price implies a rebase past kMaxLevels "
+                "(price far outside the book's established range — likely a bad/sentinel price, "
+                "not a real quote; see devlog day 17, found via a real 888888800-tick ITCH order)");
+        }
         ++level_array_growths_;
         std::vector<PriceLevel> grown(levels_.size() + static_cast<size_t>(shift));
         for (size_t i = 0; i < levels_.size(); ++i) {
@@ -55,8 +61,27 @@ int64_t OrderBookV2::ensure_index_for_price(Price p) {
         index_.for_each_mut([shift](auto& kv) { kv.second.level_idx += shift; });
         idx = p - base_;
     } else if (idx >= static_cast<int64_t>(levels_.size())) {
+        const size_t new_size = static_cast<size_t>(idx) + static_cast<size_t>(initial_window_ / 4) + 1;
+        // Guard added after wiring real ITCH data through this engine for
+        // the first time (see devlog day 17): a real order with price
+        // 888888800 (a $88,888.88 sentinel/garbage value, not a real
+        // quote) against a normal small-window book asked for ~891M
+        // levels — 13+ GB. Nothing before this point validates that a
+        // caller-supplied price is sane; a single malformed or
+        // sentinel-valued order could crash a whole shard with an
+        // unbounded allocation. This is exactly what a pre-trade risk
+        // stage (price bands — see ROADMAP.md) should catch before an
+        // order ever reaches the book, but the book itself shouldn't be
+        // one bad price away from an OOM regardless of what sits
+        // upstream — cheap, worth having at both layers.
+        if (new_size > kMaxLevels) {
+            throw std::runtime_error(
+                "OrderBookV2::ensure_index_for_price: price implies growth past kMaxLevels "
+                "(price far outside the book's established range — likely a bad/sentinel price, "
+                "not a real quote; see devlog day 17, found via a real 888888800-tick ITCH order)");
+        }
         ++level_array_growths_;
-        levels_.resize(static_cast<size_t>(idx) + static_cast<size_t>(initial_window_ / 4) + 1);
+        levels_.resize(new_size);
     }
     return idx;
 }
