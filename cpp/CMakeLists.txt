@@ -58,11 +58,46 @@ target_link_libraries(fuzz_v2 PRIVATE order_book_v2)
 # library from order_book — this stage doesn't know about OrderBookV2 yet
 # (see ROADMAP.md V3 for the Sequencer/Risk stages that will sit between
 # the two).
-add_library(itch_feed feed/itch_parser.cpp)
+#
+# itch_simd_neon.cpp uses <arm_neon.h> directly (no portable dispatch
+# written — see devlog day 16: this repo's real hardware is ARM64, and
+# writing an AVX2 path too would mean shipping code never actually
+# compiled or measured, the thing this repo has avoided everywhere else).
+# Only built/tested on ARM so a clone on x86 still builds clean instead of
+# failing on a missing header.
+set(ITCH_FEED_SOURCES feed/itch_parser.cpp)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+  list(APPEND ITCH_FEED_SOURCES feed/itch_simd_neon.cpp)
+  set(ITCH_HAVE_NEON ON)
+else()
+  message(STATUS "itch_simd_neon.cpp skipped: CMAKE_SYSTEM_PROCESSOR=${CMAKE_SYSTEM_PROCESSOR} is not ARM64 — see devlog day 16")
+endif()
+
+add_library(itch_feed ${ITCH_FEED_SOURCES})
 target_include_directories(itch_feed PUBLIC feed)
 
 add_executable(test_itch_parser feed/tests/test_itch_parser.cpp)
 target_link_libraries(test_itch_parser PRIVATE itch_feed)
+
+# MoldUDP64 session/gap-recovery layer is header-only (moldudp64.h,
+# moldudp64_session.h) — this test links itch_feed only to reuse
+# BinaryFileReader for pulling real message bytes as test payloads.
+add_executable(test_moldudp64 feed/tests/test_moldudp64.cpp)
+target_link_libraries(test_moldudp64 PRIVATE itch_feed)
+
+if(ITCH_HAVE_NEON)
+  add_executable(test_itch_simd_neon feed/tests/test_itch_simd_neon.cpp)
+  target_link_libraries(test_itch_simd_neon PRIVATE itch_feed)
+endif()
+
+find_package(Threads REQUIRED)
+# Real UDP multicast + unicast retransmission over loopback — genuine
+# socket code, not simulated. See devlog for why loopback stands in for a
+# live exchange feed here, and for the ENODEV/IP_MULTICAST_IF fix this
+# sandbox needed (no default route for the kernel to resolve INADDR_ANY
+# against — real deployments bind to the actual NIC instead).
+add_executable(test_udp_multicast_e2e feed/tests/test_udp_multicast_e2e.cpp)
+target_link_libraries(test_udp_multicast_e2e PRIVATE itch_feed Threads::Threads)
 
 find_package(Threads REQUIRED)
 
@@ -103,3 +138,8 @@ add_test(NAME ffi_adapter_standalone COMMAND test_order_book_v2_ffi_standalone)
 # Runs from the build directory by default via CTest's WORKING_DIRECTORY,
 # so point it at the real data file relative to the repo root.
 add_test(NAME itch_parser_real_data COMMAND test_itch_parser "${CMAKE_SOURCE_DIR}/../data/itch50_sample_20191230.bin")
+add_test(NAME moldudp64_session COMMAND test_moldudp64 "${CMAKE_SOURCE_DIR}/../data/itch50_sample_20191230.bin")
+add_test(NAME udp_multicast_e2e COMMAND test_udp_multicast_e2e "${CMAKE_SOURCE_DIR}/../data/itch50_sample_20191230.bin")
+if(ITCH_HAVE_NEON)
+  add_test(NAME itch_simd_neon COMMAND test_itch_simd_neon "${CMAKE_SOURCE_DIR}/../data/itch50_sample_20191230.bin")
+endif()

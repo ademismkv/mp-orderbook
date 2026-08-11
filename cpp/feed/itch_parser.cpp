@@ -31,6 +31,17 @@ size_t expected_length(char type) {
     }
 }
 
+AddOrderNoMPID decode_add_order_scalar(const uint8_t* data) {
+    AddOrderNoMPID m{};
+    m.h = read_common_header(data);
+    m.order_ref_number = be64(data + 11);
+    m.buy_sell_indicator = static_cast<char>(data[19]);
+    m.shares = be32(data + 20);
+    m.stock = read_alpha<8>(data + 24);
+    m.price = be32(data + 32);
+    return m;
+}
+
 std::optional<Message> parse_message(const uint8_t* data, size_t len) {
     if (len == 0) return std::nullopt;
     const char type = static_cast<char>(data[0]);
@@ -128,16 +139,8 @@ std::optional<Message> parse_message(const uint8_t* data, size_t len) {
             m.operational_halt_action = static_cast<char>(data[20]);
             return m;
         }
-        case 'A': {
-            AddOrderNoMPID m{};
-            m.h = h;
-            m.order_ref_number = be64(data + 11);
-            m.buy_sell_indicator = static_cast<char>(data[19]);
-            m.shares = be32(data + 20);
-            m.stock = read_alpha<8>(data + 24);
-            m.price = be32(data + 32);
-            return m;
-        }
+        case 'A':
+            return decode_add_order_scalar(data);
         case 'F': {
             AddOrderMPID m{};
             m.h = h;

@@ -284,6 +284,17 @@ using Message = std::variant<
 // type's declared wire length (truncated/corrupt record).
 std::optional<Message> parse_message(const uint8_t* data, size_t len);
 
+// Direct scalar decoder for Add Order — No MPID ('A'), bypassing
+// std::variant/std::optional construction. Exists so SIMD-vs-scalar
+// benchmarks can isolate actual field-decode cost instead of being
+// swamped by Message's variant-construction overhead (sizeof(Message) is
+// 72 bytes vs. sizeof(AddOrderNoMPID) alone at 48 — a real, measured
+// confound found while benchmarking itch_simd_neon.cpp, not a
+// hypothetical one). parse_message()'s 'A' case calls this internally,
+// so there's exactly one implementation to keep correct, not two that
+// can drift apart.
+AddOrderNoMPID decode_add_order_scalar(const uint8_t* data);
+
 // The exact wire length (in bytes, including the 1-byte type code) that
 // this message type occupies, or 0 if `type` isn't a recognized code.
 // Used to cross-check against the BinaryFile/MoldUDP64 length field as a
