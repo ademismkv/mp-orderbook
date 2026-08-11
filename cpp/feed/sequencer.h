@@ -1,6 +1,7 @@
 #pragma once
 #include "execution_report.h"
 #include "itch_messages.h"
+#include "market_data.h"
 #include "order_book_v2.h"
 #include "risk.h"
 
@@ -42,6 +43,7 @@ class Sequencer {
 public:
     using BookForSymbol = std::function<OrderBookV2&(const std::string& symbol)>;
     using ExecutionReportCallback = std::function<void(const ExecutionReport&)>;
+    using MarketDataCallback = std::function<void(const mdfeed::MDEvent&)>;
 
     struct Stats {
         uint64_t add_orders = 0;
@@ -58,9 +60,14 @@ public:
     };
 
     // `risk` may be nullptr — no risk checking, same behavior as before
-    // Risk existed. `report_cb` may be empty — no reports emitted.
+    // Risk existed. `report_cb` may be empty — no (private) execution
+    // reports emitted. `md_cb` may be empty — no (public) market data
+    // events published. Both callbacks only ever fire for something that
+    // actually happened to a book: a risk-rejected or arena-rejected order
+    // produces a Reject execution report but NEVER a market data event —
+    // nothing observable changed for a subscriber to see.
     void on_message(const itch::Message& msg, const BookForSymbol& book_for, RiskEngine* risk = nullptr,
-                     const ExecutionReportCallback& report_cb = {});
+                     const ExecutionReportCallback& report_cb = {}, const MarketDataCallback& md_cb = {});
 
     const Stats& stats() const { return stats_; }
     size_t known_orders() const { return order_symbol_.size(); }

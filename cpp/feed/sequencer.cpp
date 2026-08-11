@@ -6,7 +6,7 @@ inline Side side_from_indicator(char c) { return c == 'B' ? Side::Buy : Side::Se
 } // namespace
 
 void Sequencer::on_message(const itch::Message& msg, const BookForSymbol& book_for, RiskEngine* risk,
-                            const ExecutionReportCallback& report_cb) {
+                            const ExecutionReportCallback& report_cb, const MarketDataCallback& md_cb) {
     std::visit(
         [&](const auto& m) {
             using T = std::decay_t<decltype(m)>;
@@ -44,10 +44,52 @@ void Sequencer::on_message(const itch::Message& msg, const BookForSymbol& book_f
                     stats_.trades_produced += scratch_trades_.size();
                     if (risk) risk->note_resting(symbol, mpid, side);
                     if (report_cb) report_cb(ExecutionReport{req.id, ExecReportType::Ack, symbol, req.qty, 0, ""});
+                    if (md_cb) {
+                        // Publish the RESTING remainder, not the raw
+                        // submitted qty — matches real ITCH's own
+                        // convention (Add Order describes what's actually
+                        // on the book) and this repo's own established
+                        // reading of it (day 17: "Add Order messages are,
+                        // by construction, the resting remainder after
+                        // matching"). If this order immediately and fully
+                        // crossed, taker_filled == req.qty and nothing
+                        // rests — no Add event at all, only the Trade(s)
+                        // below, exactly like a real exchange wouldn't
+                        // publish a book-add for liquidity that never
+                        // actually touched the book.
+                        Quantity taker_filled = 0;
+                        for (const auto& t : scratch_trades_) {
+                            if (t.taker_id == req.id) taker_filled += t.qty;
+                        }
+                        const Quantity resting_qty = req.qty - taker_filled;
+                        if (resting_qty > 0) {
+                            mdfeed::MDEvent ev;
+                            ev.type = mdfeed::EventType::Add;
+                            ev.side = side;
+                            ev.timestamp_ns = m.h.timestamp_ns;
+                            ev.order_id = req.id;
+                            ev.symbol = mdfeed::symbol_pad(symbol);
+                            ev.price = req.price;
+                            ev.qty = resting_qty;
+                            md_cb(ev);
+                        }
+                    }
                     for (const auto& t : scratch_trades_) {
                         if (risk) risk->on_trade(symbol, t.price);
                         if (report_cb) {
                             report_cb(ExecutionReport{req.id, ExecReportType::Fill, symbol, t.qty, t.price, ""});
+                        }
+                        if (md_cb) {
+                            mdfeed::MDEvent ev;
+                            ev.type = mdfeed::EventType::Trade;
+                            ev.side = side;   // the incoming (taker) order's side
+                            ev.timestamp_ns = m.h.timestamp_ns;
+                            ev.order_id = t.maker_id;
+                            ev.new_order_id = t.taker_id;
+                            ev.symbol = mdfeed::symbol_pad(symbol);
+                            ev.price = t.price;
+                            ev.qty = t.qty;
+                            md_cb(ev);
                         }
                     }
                 } catch (const std::runtime_error& e) {
@@ -64,6 +106,16 @@ void Sequencer::on_message(const itch::Message& msg, const BookForSymbol& book_f
                 }
                 book_for(it->second.symbol).reduce(m.order_ref_number, m.canceled_shares);
                 stats_.cancels++;
+                if (md_cb) {
+                    mdfeed::MDEvent ev;
+                    ev.type = mdfeed::EventType::Cancel;
+                    ev.side = it->second.side;
+                    ev.timestamp_ns = m.h.timestamp_ns;
+                    ev.order_id = m.order_ref_number;
+                    ev.symbol = mdfeed::symbol_pad(it->second.symbol);
+                    ev.qty = m.canceled_shares;   // shares REMOVED, not remaining — see market_data.h
+                    md_cb(ev);
+                }
 
             } else if constexpr (std::is_same_v<T, itch::OrderDelete>) {
                 auto it = order_symbol_.find(m.order_ref_number);
@@ -73,6 +125,15 @@ void Sequencer::on_message(const itch::Message& msg, const BookForSymbol& book_f
                 }
                 book_for(it->second.symbol).cancel(m.order_ref_number);
                 if (risk) risk->note_removed(it->second.symbol, it->second.mpid, it->second.side);
+                if (md_cb) {
+                    mdfeed::MDEvent ev;
+                    ev.type = mdfeed::EventType::Delete;
+                    ev.side = it->second.side;
+                    ev.timestamp_ns = m.h.timestamp_ns;
+                    ev.order_id = m.order_ref_number;
+                    ev.symbol = mdfeed::symbol_pad(it->second.symbol);
+                    md_cb(ev);
+                }
                 order_symbol_.erase(it);
                 stats_.deletes++;
 
@@ -94,6 +155,22 @@ void Sequencer::on_message(const itch::Message& msg, const BookForSymbol& book_f
                 // price-band reference here. Order Executed With Price
                 // and Trade messages do carry a real execution price.
                 stats_.executes++;
+                if (md_cb) {
+                    // Published as Trade (real shares were filled), price
+                    // 0 — honestly reflects that THIS message type doesn't
+                    // carry one. A subscriber reconstructing book depth
+                    // only needs the qty delta; price is a trade-tape
+                    // nicety this message can't supply.
+                    mdfeed::MDEvent ev;
+                    ev.type = mdfeed::EventType::Trade;
+                    ev.side = it->second.side;
+                    ev.timestamp_ns = m.h.timestamp_ns;
+                    ev.order_id = m.order_ref_number;
+                    ev.symbol = mdfeed::symbol_pad(it->second.symbol);
+                    ev.price = 0;
+                    ev.qty = m.executed_shares;
+                    md_cb(ev);
+                }
 
             } else if constexpr (std::is_same_v<T, itch::OrderExecutedWithPrice>) {
                 if (m.printable == 'N') {
@@ -111,6 +188,17 @@ void Sequencer::on_message(const itch::Message& msg, const BookForSymbol& book_f
                 book_for(it->second.symbol).reduce(m.order_ref_number, m.executed_shares);
                 if (risk) risk->on_trade(it->second.symbol, static_cast<Price>(m.execution_price));
                 stats_.executes++;
+                if (md_cb) {
+                    mdfeed::MDEvent ev;
+                    ev.type = mdfeed::EventType::Trade;
+                    ev.side = it->second.side;
+                    ev.timestamp_ns = m.h.timestamp_ns;
+                    ev.order_id = m.order_ref_number;
+                    ev.symbol = mdfeed::symbol_pad(it->second.symbol);
+                    ev.price = static_cast<Price>(m.execution_price);
+                    ev.qty = m.executed_shares;
+                    md_cb(ev);
+                }
 
             } else if constexpr (std::is_same_v<T, itch::OrderReplace>) {
                 auto it = order_symbol_.find(m.original_order_ref_number);
@@ -150,10 +238,57 @@ void Sequencer::on_message(const itch::Message& msg, const BookForSymbol& book_f
                     stats_.trades_produced += scratch_trades_.size();
                     if (risk) risk->note_resting(info.symbol, info.mpid, info.side);
                     if (report_cb) report_cb(ExecutionReport{req.id, ExecReportType::Ack, info.symbol, req.qty, 0, ""});
+                    if (md_cb) {
+                        // Same resting-remainder convention as the Add
+                        // Order branch above — see that comment.
+                        Quantity taker_filled = 0;
+                        for (const auto& t : scratch_trades_) {
+                            if (t.taker_id == req.id) taker_filled += t.qty;
+                        }
+                        const Quantity resting_qty = req.qty - taker_filled;
+                        if (resting_qty > 0) {
+                            mdfeed::MDEvent ev;
+                            ev.type = mdfeed::EventType::Replace;
+                            ev.side = info.side;
+                            ev.timestamp_ns = m.h.timestamp_ns;
+                            ev.order_id = m.original_order_ref_number;
+                            ev.new_order_id = m.new_order_ref_number;
+                            ev.symbol = mdfeed::symbol_pad(info.symbol);
+                            ev.price = req.price;
+                            ev.qty = resting_qty;
+                            md_cb(ev);
+                        } else {
+                            // Replacement order fully crossed immediately —
+                            // nothing new rests. The old order is still
+                            // gone, though, so a subscriber must still
+                            // drop it; publish as a plain Delete instead of
+                            // a Replace with a dangling new_order_id that
+                            // never actually rests.
+                            mdfeed::MDEvent ev;
+                            ev.type = mdfeed::EventType::Delete;
+                            ev.side = info.side;
+                            ev.timestamp_ns = m.h.timestamp_ns;
+                            ev.order_id = m.original_order_ref_number;
+                            ev.symbol = mdfeed::symbol_pad(info.symbol);
+                            md_cb(ev);
+                        }
+                    }
                     for (const auto& t : scratch_trades_) {
                         if (risk) risk->on_trade(info.symbol, t.price);
                         if (report_cb) {
                             report_cb(ExecutionReport{req.id, ExecReportType::Fill, info.symbol, t.qty, t.price, ""});
+                        }
+                        if (md_cb) {
+                            mdfeed::MDEvent ev;
+                            ev.type = mdfeed::EventType::Trade;
+                            ev.side = info.side;
+                            ev.timestamp_ns = m.h.timestamp_ns;
+                            ev.order_id = t.maker_id;
+                            ev.new_order_id = t.taker_id;
+                            ev.symbol = mdfeed::symbol_pad(info.symbol);
+                            ev.price = t.price;
+                            ev.qty = t.qty;
+                            md_cb(ev);
                         }
                     }
                 } catch (const std::runtime_error& e) {

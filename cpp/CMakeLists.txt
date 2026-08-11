@@ -107,6 +107,16 @@ find_package(Threads REQUIRED)
 add_executable(test_udp_multicast_e2e feed/tests/test_udp_multicast_e2e.cpp)
 target_link_libraries(test_udp_multicast_e2e PRIVATE itch_feed Threads::Threads)
 
+# Market Data Feed — ROADMAP.md's last pipeline stage. Runs the full real
+# file through Sequencer -> Risk -> Order Books -> Execution Reports (same
+# as test_sequencer_wiring), capturing every public market data event, then
+# actually publishes it over real UDP multicast wrapped in real MoldUDP64
+# framing (reusing the day 14/15 transport), with a second thread
+# subscribing independently and reconstructing a shadow book from the wire
+# feed alone. See devlog day 19.
+add_executable(test_market_data_feed feed/tests/test_market_data_feed.cpp)
+target_link_libraries(test_market_data_feed PRIVATE itch_feed Threads::Threads)
+
 find_package(Threads REQUIRED)
 
 # ADR-1: producer -> SPSC ring -> matching thread -> SPSC ring -> consumer,
@@ -152,3 +162,4 @@ if(ITCH_HAVE_NEON)
   add_test(NAME itch_simd_neon COMMAND test_itch_simd_neon "${CMAKE_SOURCE_DIR}/../data/itch50_sample_20191230.bin")
 endif()
 add_test(NAME sequencer_wiring COMMAND test_sequencer_wiring "${CMAKE_SOURCE_DIR}/../data/itch50_sample_20191230.bin")
+add_test(NAME market_data_feed COMMAND test_market_data_feed "${CMAKE_SOURCE_DIR}/../data/itch50_sample_20191230.bin")
