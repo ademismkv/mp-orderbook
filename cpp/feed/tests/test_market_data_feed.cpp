@@ -36,7 +36,17 @@ constexpr const char* kGroup = "239.255.13.38";
 constexpr uint16_t kMcastPort = 17341;
 constexpr uint16_t kRequestServerPort = 17342;
 constexpr uint16_t kClientReplyPort = 17343;
-constexpr size_t kEventsPerPacket = 200;
+// 27 events/packet keeps the MoldUDP64 payload at 20 + 27*50 = 1370 bytes —
+// comfortably under 1472, the largest UDP payload a standard 1500-byte
+// Ethernet MTU can carry without IP fragmentation. This used to be 200
+// (10,420 bytes/packet), which worked on this repo's Linux sandbox but
+// hit "Message too long" (EMSGSIZE) on a real Mac: macOS enforces a
+// stricter default multicast datagram ceiling than Linux's, and real
+// multicast market data feeds deliberately avoid fragmentation anyway —
+// a single lost IP fragment silently kills the whole reassembled
+// datagram, so staying under one MTU isn't just portability, it's the
+// actual correct practice for a real feed. See devlog day 19 addendum.
+constexpr size_t kEventsPerPacket = 27;
 constexpr int kNumDrops = 5;
 
 int g_failures = 0;
@@ -140,45 +150,69 @@ int main(int argc, char** argv) {
     // whatever real loopback loss actually occurs at this volume — real
     // UDP has no delivery guarantee, and pretending only the deliberate
     // drops happen would be dishonest about what "real sockets" means).
+    // Real socket errors (EMSGSIZE, ENODEV, etc.) must surface as a clean,
+    // diagnosable test failure — not std::terminate. A std::thread whose
+    // function lets an exception escape calls std::terminate and aborts
+    // the WHOLE process with no useful output, which is exactly what
+    // happened when a too-large packet tripped McastSender::send() on a
+    // real Mac (see devlog day 19 addendum). Every thread body below is
+    // wrapped accordingly.
     std::atomic<bool> stop_server{false};
     std::atomic<int> requests_answered{0};
+    std::atomic<bool> server_failed{false};
     std::thread server_thread([&] {
-        netfeed::UnicastSocket server(kRequestServerPort);
-        while (!stop_server.load()) {
-            fd_set rfds;
-            FD_ZERO(&rfds);
-            FD_SET(server.fd(), &rfds);
-            timeval tv{0, 200000};
-            if (::select(server.fd() + 1, &rfds, nullptr, nullptr, &tv) <= 0) continue;
-            std::string from_ip;
-            uint16_t from_port = 0;
-            auto raw = server.receive_from(from_ip, from_port);
-            moldudp64::RequestPacket req;
-            if (moldudp64::decode_request(raw.data(), raw.size(), req)) {
-                auto it = packets_by_seq.find(req.sequence_number);
-                if (it != packets_by_seq.end()) {
-                    server.send_to(from_ip, from_port, it->second);
-                    ++requests_answered;
+        try {
+            netfeed::UnicastSocket server(kRequestServerPort);
+            while (!stop_server.load()) {
+                fd_set rfds;
+                FD_ZERO(&rfds);
+                FD_SET(server.fd(), &rfds);
+                timeval tv{0, 50000};   // 50ms — tighter than the old 200ms so a real gap
+                                        // recovery round trip doesn't stack up multiple
+                                        // polling waits into visible extra latency.
+                if (::select(server.fd() + 1, &rfds, nullptr, nullptr, &tv) <= 0) continue;
+                std::string from_ip;
+                uint16_t from_port = 0;
+                auto raw = server.receive_from(from_ip, from_port);
+                moldudp64::RequestPacket req;
+                if (moldudp64::decode_request(raw.data(), raw.size(), req)) {
+                    auto it = packets_by_seq.find(req.sequence_number);
+                    if (it != packets_by_seq.end()) {
+                        server.send_to(from_ip, from_port, it->second);
+                        ++requests_answered;
+                    }
                 }
             }
+        } catch (const std::exception& e) {
+            std::printf("FAIL: re-request server thread threw: %s\n", e.what());
+            server_failed.store(true);
         }
     });
 
     // --- sender thread: publishes the real feed over real UDP multicast.
-    // Paced deliberately (1ms/packet) — sending ~2200 datagrams back-to-back
-    // with no gap overruns this sandbox's default loopback UDP receive
-    // buffer well before the single-threaded subscriber can drain it,
-    // which is real, observed packet loss (not a hypothetical) rather than
-    // anything about MoldUDP64 itself.
+    // Paced in small bursts (1ms sleep every 5 packets, ~7KB/ms ≈ 7MB/s)
+    // rather than one sleep per packet — with 27-event packets there are
+    // ~8x more of them than the old 200-event batching, and sleeping on
+    // every single one would spend most of the run in intentional sleep
+    // for no reliability benefit. The target rate mirrors what was
+    // already proven not to overrun the receiver's socket buffer at the
+    // old (larger) packet size.
+    std::atomic<bool> sender_failed{false};
     std::thread sender_thread([&] {
-        netfeed::McastSender sender(kGroup, kMcastPort);
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
-        for (const auto& [s, pkt] : packets_by_seq) {
-            if (dropped_seqs.count(s)) continue;
-            sender.send(pkt);
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        try {
+            netfeed::McastSender sender(kGroup, kMcastPort);
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            int n = 0;
+            for (const auto& [s, pkt] : packets_by_seq) {
+                if (dropped_seqs.count(s)) continue;
+                sender.send(pkt);
+                if (++n % 5 == 0) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            sender.send(moldudp64::encode_end_of_session(session_id, total_events + 1));
+        } catch (const std::exception& e) {
+            std::printf("FAIL: sender thread threw: %s\n", e.what());
+            sender_failed.store(true);
         }
-        sender.send(moldudp64::encode_end_of_session(session_id, total_events + 1));
     });
 
     // --- main thread: the market data SUBSCRIBER — knows nothing but the wire feed ---
@@ -235,13 +269,14 @@ int main(int argc, char** argv) {
     // actually been retransmitted and delivered; stopping on ended() alone
     // would race a still-in-flight recovery and misreport it as data loss.
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(90);
-    while (delivered_count < total_events && std::chrono::steady_clock::now() < deadline) {
+    while (delivered_count < total_events && !sender_failed.load() && !server_failed.load() &&
+           std::chrono::steady_clock::now() < deadline) {
         fd_set rfds;
         FD_ZERO(&rfds);
         FD_SET(mcast_recv.fd(), &rfds);
         FD_SET(client.fd(), &rfds);
         const int maxfd = std::max(mcast_recv.fd(), client.fd());
-        timeval tv{0, 200000};
+        timeval tv{0, 50000};   // 50ms — see server thread's matching comment above
         if (::select(maxfd + 1, &rfds, nullptr, nullptr, &tv) <= 0) continue;
 
         for (int fd : {mcast_recv.fd(), client.fd()}) {
@@ -268,6 +303,9 @@ int main(int argc, char** argv) {
                 "loopback UDP loss under load — not simulated)\n",
                 gap_requests_sent, requests_answered.load(), dropped_seqs.size());
     std::printf("shadow-reconstructed symbols: %zu (true symbols: %zu)\n", shadow_books.size(), true_state.size());
+
+    expect(!sender_failed.load(), "sender thread completed without a real socket error");
+    expect(!server_failed.load(), "re-request server thread completed without a real socket error");
 
     // End-of-session is sent exactly once, with no retry, unlike real data
     // packets (which are individually recoverable via a Request Packet).

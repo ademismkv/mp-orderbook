@@ -1,0 +1,9 @@
+## 2026-07-29 — MoldUDP64 gap detection and recovery
+
+Real Nasdaq ITCH multicast isn't sent as bare ITCH messages over UDP — it's wrapped in MoldUDP64, a session/sequencing layer (Nasdaq's own spec, V1.00) that's the actual mechanism behind "handle packet gaps" and "recovery logic": every downstream packet carries a starting sequence number and a count of messages in it; heartbeats carry the next-expected sequence number even when nothing's flowing, so a receiver can detect loss during idle periods too, not just between real messages; a separate Request/Downstream exchange with a re-request server handles retransmission.
+
+Built this as two pieces: `moldudp64.h` (wire encode/decode — header, message blocks, heartbeat/end-of-session control packets, request packets) and `moldudp64_session.h` (the actual state machine — tracks next-expected sequence, holds out-of-order arrivals in a map keyed by sequence number until the gap before them fills, and calls out for a retransmission request with the exact missing range).
+
+Verified with real ITCH message bytes (pulled from the same sample as the parser) wrapped in synthetic MoldUDP64 framing — no live multicast capture available to draw actual wire packets from, so the framing around the messages is ours, but the payload inside every message block is real. Test scenario: 8 real messages across 4 packets, one packet deliberately withheld to simulate a dropped UDP datagram. Confirmed: the two messages behind the gap are held, not delivered early; exactly one gap request fires with the precise missing range (sequence 3, count 2); feeding the withheld packet back in flushes everything in strict order with byte-exact content; an on-time heartbeat triggers nothing; end-of-session sets the flag cleanly. 15/15 checks pass.
+
+Next: an actual UDP multicast sender/receiver over loopback, so "receive UDP multicast" is real socket code being exercised, not just the framing logic tested in isolation.
