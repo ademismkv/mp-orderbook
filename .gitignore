@@ -12,3 +12,17 @@ rust/target/
 tools/__pycache__/
 .DS_Store
 .quickstart-build/
+*.dSYM/
+# README's "Build & test" g++ one-liners compile straight into cpp/ with no
+# extension (matches the binary name, not a glob-friendly suffix) — ignore
+# the known output names so following the README doesn't dirty git status.
+/cpp/test_v1
+/cpp/test_v2
+/cpp/test_zero_alloc
+/cpp/bench_v2
+/cpp/replay
+/cpp/t_tsan
+/cpp/t_asan
+/cpp/test_itch_parser
+/cpp/test_md_feed
+/Testing/

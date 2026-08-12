@@ -11,6 +11,17 @@ OrderBookV2::OrderBookV2(uint32_t arena_capacity, Price initial_window)
     // — a rehash storm on the id->location map is a real, measurable cost
     // on the add() hot path, unlike blind cache-line padding (see devlog).
     index_.reserve(arena_capacity);
+    // Same reasoning applies to free_list_: it can never hold more than
+    // arena_capacity entries (every index in it came from this arena), so
+    // reserving that bound up front means free_node()'s push_back() never
+    // triggers a reallocation, no matter how much add()/cancel() churn a
+    // real run does. Found by building test_zero_alloc.cpp (see
+    // cpp/tests/) — without this, the first several cancels after
+    // construction were a real, measured heap allocation on the hot path,
+    // exactly the kind of cost this engine's whole arena design exists to
+    // avoid; it just took a test that actually counted allocations to
+    // catch it instead of assuming the arena made this a solved problem.
+    free_list_.reserve(arena_capacity);
 }
 
 uint32_t OrderBookV2::alloc_node() {

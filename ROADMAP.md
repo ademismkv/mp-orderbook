@@ -127,15 +127,22 @@ conservation, price-time priority preserved) on top of the existing
 differential fuzzing; every failed fuzz case gets its seed logged for
 deterministic replay.
 
-**CI** — benchmark on every commit, p99 regression detection, a
-zero-allocation assertion on the hot path, sanitizer builds in the matrix
-(not just available as a manual command).
+**CI** — done (day 20): benchmark runs on every commit with results
+uploaded as an artifact, a real p99/throughput regression gate against a
+measured (not guessed) noise-tolerant baseline, a zero-allocation
+assertion on the hot path (`test_zero_alloc.cpp` — found and fixed a real
+allocation bug, a missing `free_list_.reserve()`), and ASan+UBSan / TSan
+as their own CI jobs, not just a manual command.
 
-**Visualization** — book replay animation, a latency histogram page.
+**Visualization** — book replay animation exists (`dashboard/index.html`,
+real precomputed data, day ~2). Still open: a true p50/p99/p99.9 latency
+*distribution* histogram (the dashboard currently has a per-batch latency
+line chart, not a distribution view).
 
-**Documentation** — architecture, design decisions, tradeoffs,
-methodology, and limitations, all in the README, not scattered across
-devlog entries only.
+**Documentation** — done (day 20): README.md now has dedicated
+Architecture, Design decisions & tradeoffs, Measurement methodology, and
+Limitations sections, cross-referencing ADR.md/devlog rather than
+duplicating them.
 
 ## Being honest about what's missing today
 

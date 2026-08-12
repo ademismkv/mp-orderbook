@@ -34,6 +34,14 @@ target_link_libraries(test_order_book PRIVATE order_book)
 add_executable(test_order_book_v2 tests/test_order_book_v2.cpp)
 target_link_libraries(test_order_book_v2 PRIVATE order_book_v2)
 
+# Turns "the arena design means no malloc on the hot path" from a claim
+# into something actually checked: overrides global operator new/delete
+# for this one executable and counts calls across 200,000 steady-state
+# add/cancel/reduce/cross ops. Found a real gap doing this — see
+# tests/test_zero_alloc.cpp and order_book_v2.cpp's free_list_.reserve().
+add_executable(test_zero_alloc tests/test_zero_alloc.cpp)
+target_link_libraries(test_zero_alloc PRIVATE order_book_v2)
+
 # v1 and v2 both define Side/Type/etc. at global scope, so bench/fuzz
 # binaries link against exactly one of the two libraries each — never both
 # in the same translation unit. See fuzz/workload.h for why differential
@@ -151,6 +159,7 @@ target_link_libraries(test_order_book_v2_ffi_standalone PRIVATE order_book_v2)
 enable_testing()
 add_test(NAME basic COMMAND test_order_book)
 add_test(NAME basic_v2 COMMAND test_order_book_v2)
+add_test(NAME zero_alloc COMMAND test_zero_alloc)
 add_test(NAME threaded COMMAND test_threaded)
 add_test(NAME ffi_adapter_standalone COMMAND test_order_book_v2_ffi_standalone)
 # Runs from the build directory by default via CTest's WORKING_DIRECTORY,

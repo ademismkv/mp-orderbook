@@ -1,0 +1,5 @@
+{
+  "_comment": "Baseline for check_regression.py, gating bench_v2's single-thread add() workload. Measured on this repo's own Linux dev sandbox (5 consecutive runs): throughput 6.34-7.79M ops/sec, p99 209-250ns — real, observed run-to-run noise on shared/virtualized hardware, not a hypothetical. Values below are near the median of those runs, not the best case, so the gate reflects typical performance rather than a lucky outlier. Update deliberately via `check_regression.py --update-baseline`, run manually, reviewed and committed like any other change — never auto-updated by CI, or a real regression could get silently absorbed into the new 'normal' one noisy run at a time.",
+  "throughput_M_ops_sec": 7.5,
+  "p99_ns": 220
+}

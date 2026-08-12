@@ -60,6 +60,11 @@ step "[2/9] unit tests..."
 TEST_V1_OUT="$("$BUILD/test_v1")"
 TEST_V2_OUT="$("$BUILD/test_v2")"
 
+g++ -std=c++20 -O3 -I"$CPP/include" \
+    "$CPP/src/order_book_v2.cpp" "$CPP/tests/test_zero_alloc.cpp" -o "$BUILD/test_zero_alloc"
+ZERO_ALLOC_OUT="$("$BUILD/test_zero_alloc")"
+[[ $VERBOSE -eq 1 ]] && echo "$ZERO_ALLOC_OUT"
+
 step "[3/9] single-thread benchmark (2,000,000 ops)..."
 g++ -std=c++20 -O3 -I"$CPP/include" -I"$CPP/bench" \
     "$CPP/src/order_book_v2.cpp" "$CPP/bench/bench_v2.cpp" -o "$BUILD/bench_v2"
@@ -116,6 +121,9 @@ MD_OUT="$("$BUILD/test_market_data_feed" "$ROOT/data/itch50_sample_20191230.bin"
 # ---- parse ----
 v1_pass=$(echo "$TEST_V1_OUT" | grep -qi "passed" && echo "5/5" || echo "FAIL")
 v2_pass=$(echo "$TEST_V2_OUT" | grep -qi "passed" && echo "10/10" || echo "FAIL")
+
+zero_alloc_count=$(echo "$ZERO_ALLOC_OUT" | sed -n 's/^allocations during measured region: \([0-9]*\).*/\1/p')
+zero_alloc_pass=$(echo "$ZERO_ALLOC_OUT" | tail -1 | grep -q "^PASS " && echo "PASS" || echo "FAIL")
 
 # histogram.h's printf uses fixed-width numeric fields (e.g. "throughput=%8.3fM"),
 # which pads with spaces *between* the "=" and the digits for short numbers —
@@ -200,6 +208,7 @@ hline "┌" "┬" "┐"
 line "Metric" "Value (measured just now)"
 hline "├" "┼" "┤"
 line "Unit tests (v1 / v2)"              "${v1_pass} / ${v2_pass}"
+line "Zero-alloc hot path (200K ops)"    "${zero_alloc_count} allocations [${zero_alloc_pass}]"
 line "Single-thread throughput"          "${bench_throughput} ops/sec"
 line "  p50 / p99 / p99.9 latency"       "${bench_p50} / ${bench_p99} / ${bench_p999}"
 line "Multithread aggregate, 1 symbol"   "${t1} ops/sec"

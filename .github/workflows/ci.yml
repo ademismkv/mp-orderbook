@@ -15,16 +15,20 @@ jobs:
         run: |
           g++ -std=c++20 -O3 -Wall -Wextra -Iinclude src/order_book.cpp tests/test_order_book.cpp -o test_v1
           g++ -std=c++20 -O3 -Wall -Wextra -Iinclude src/order_book_v2.cpp tests/test_order_book_v2.cpp -o test_v2
-          g++ -std=c++20 -O3 -Iinclude -Ibench src/order_book.cpp bench/bench_v1.cpp -o bench_v1
           g++ -std=c++20 -O3 -Iinclude -Ibench src/order_book_v2.cpp bench/bench_v2.cpp -o bench_v2
           g++ -std=c++20 -O3 -Iinclude -Ifuzz src/order_book.cpp fuzz/fuzz_v1.cpp -o fuzz_v1
           g++ -std=c++20 -O3 -Iinclude -Ifuzz src/order_book_v2.cpp fuzz/fuzz_v2.cpp -o fuzz_v2
+          g++ -std=c++20 -O3 -Iinclude src/order_book_v2.cpp tests/test_zero_alloc.cpp -o test_zero_alloc
 
       - name: unit tests (must pass)
         working-directory: cpp
         run: |
           ./test_v1
           ./test_v2
+
+      - name: zero-allocation hot-path check (must pass)
+        working-directory: cpp
+        run: ./test_zero_alloc
 
       - name: differential fuzz — v2 must match v1 exactly (correctness gate)
         working-directory: cpp
@@ -38,11 +42,23 @@ jobs:
           done
           exit $fail
 
-      - name: benchmark (informational only — CI runners are noisy, not a perf gate)
+      # Runs on every commit (not just tagged releases) and is a real gate,
+      # not just informational — thresholds are wide enough to survive
+      # shared-runner noise without crying wolf; see check_regression.py's
+      # docstring for the actual measured noise this was tuned against.
+      - name: benchmark + p99/throughput regression gate
         working-directory: cpp
         run: |
-          ./bench_v1
-          ./bench_v2
+          ./bench_v2 | tee bench_v2_result.txt
+          python3 bench/check_regression.py bench_v2_result.txt
+
+      - name: upload this commit's benchmark result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench_v2-result-${{ github.sha }}
+          path: cpp/bench_v2_result.txt
+          retention-days: 90
 
       - name: cmake build (sanity check the CMakeLists in parallel with the direct g++ build above)
         working-directory: cpp
@@ -51,4 +67,49 @@ jobs:
           mkdir -p build && cd build
           cmake .. -DCMAKE_BUILD_TYPE=Release
           make -j
-          ctest --output-on-failure
+
+      # This one ctest invocation covers the full pipeline, not just the
+      # core engine: order book unit tests, threaded/TSan-relevant test,
+      # FFI adapter, the real-data Feed Handler (itch_parser_real_data),
+      # MoldUDP64 gap recovery + real UDP multicast (moldudp64_session,
+      # udp_multicast_e2e), Sequencer -> Risk -> Order Books -> Execution
+      # Reports (sequencer_wiring), and Market Data Feed over a real second
+      # UDP multicast socket with a shadow-book-reconstructing subscriber
+      # (market_data_feed) — every CTest name below is one add_test(...) in
+      # CMakeLists.txt; see devlog day 13-19 for how each was built and
+      # verified. itch_simd_neon is ARM-only and skips itself on this
+      # x86_64 runner (see CMakeLists.txt's ITCH_HAVE_NEON guard).
+      - name: ctest — full pipeline (core engine + Feed/Sequencer/Risk/ExecReports/MarketData)
+        working-directory: cpp/build
+        run: ctest --output-on-failure
+
+  sanitizers-asan-ubsan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build + run core engine tests under ASan+UBSan
+        working-directory: cpp
+        run: |
+          g++ -std=c++20 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+              -Iinclude src/order_book_v2.cpp tests/test_order_book_v2.cpp -o test_v2_asan
+          ./test_v2_asan
+          g++ -std=c++20 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+              -Iinclude -Ifuzz src/order_book_v2.cpp fuzz/fuzz_v2.cpp -o fuzz_v2_asan
+          for seed in 1 2 3 7 42; do ./fuzz_v2_asan "$seed" 50000 > /dev/null; done
+          g++ -std=c++20 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+              -Iinclude src/order_book_v2.cpp tools/replay_lobster.cpp -o replay_lobster_asan
+          ./replay_lobster_asan ../data/AAPL_2012-06-21_34200000_57600000_message_10.csv
+
+  sanitizers-tsan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Can't combine with ASan (both intercept malloc), so this is its own
+      # job — the manual command already documented in README's "Build &
+      # test" section, just run automatically now instead of only by hand.
+      - name: build + run the threaded pipeline test under TSan
+        working-directory: cpp
+        run: |
+          g++ -std=c++20 -O1 -g -fsanitize=thread -pthread \
+              -Iinclude -Ifuzz src/order_book_v2.cpp tests/test_threaded.cpp -o test_threaded_tsan
+          ./test_threaded_tsan 42 5000
