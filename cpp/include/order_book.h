@@ -31,4 +31,9 @@ private:
     std::unordered_map<uint64_t, std::pair<Side, double>>     index_;
 
     std::vector<Trade> match(Order& taker);  // tries to fill; mutates taker.qty in place (by ref, see devlog 2026-07-17)
+    // Non-mutating: is taker.qty fully fillable against the opposite side
+    // within taker.price? Walks individual resting orders (v1 has no
+    // per-level total_qty aggregate, unlike v2) — used by FOK to decide
+    // whether to commit to match() at all.
+    bool can_fully_fill(const Order& taker) const;
 };

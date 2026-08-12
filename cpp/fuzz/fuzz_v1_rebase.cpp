@@ -23,7 +23,11 @@ int main(int argc, char** argv) {
         Order o;
         o.id = op.id;
         o.side = op.is_buy ? Side::Buy : Side::Sell;
-        o.type = (op.kind == OpKind::AddLimit) ? Type::Limit : Type::Market;
+        o.type = (op.kind == OpKind::AddLimit)    ? Type::Limit
+                : (op.kind == OpKind::AddMarket)  ? Type::Market
+                : (op.kind == OpKind::AddIOC)     ? Type::IOC
+                : (op.kind == OpKind::AddFOK)     ? Type::FOK
+                :                                    Type::PostOnly;
         o.price = static_cast<double>(op.price);
         o.qty = op.qty;
         o.timestamp_ns = 0;

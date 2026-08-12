@@ -70,12 +70,72 @@ void test_full_fill_does_not_rest() {
     assert(b.best_ask() == 0.0);
 }
 
+// IOC: fills what's available immediately, discards the remainder, never
+// rests — mirrors test_order_book_v2.cpp's test_ioc_discards_remainder.
+void test_ioc_discards_remainder() {
+    OrderBook b;
+    b.add(lim(Side::Sell, 100, 5));
+    auto t = b.add({rng_id(), Side::Buy, Type::IOC, 100, 7, 0});
+    assert(t.size() == 1 && t[0].qty == 5);
+    assert(b.depth() == 0);
+    assert(b.best_bid() == 0.0);
+}
+
+// FOK: resting liquidity (5) is less than requested (10) -> reject
+// entirely, no partial fill, resting sell untouched.
+void test_fok_rejects_when_not_fully_fillable() {
+    OrderBook b;
+    b.add(lim(Side::Sell, 100, 5));
+    auto t = b.add({rng_id(), Side::Buy, Type::FOK, 100, 10, 0});
+    assert(t.empty());
+    assert(b.depth() == 1);
+    assert(b.best_ask() == 100);
+}
+
+// FOK: exactly enough liquidity across two price levels -> fully fills.
+void test_fok_fills_when_fully_available() {
+    OrderBook b;
+    b.add(lim(Side::Sell, 100, 5));
+    b.add(lim(Side::Sell, 101, 5));
+    auto t = b.add({rng_id(), Side::Buy, Type::FOK, 101, 10, 0});
+    assert(t.size() == 2);
+    assert(t[0].price == 100 && t[0].qty == 5);
+    assert(t[1].price == 101 && t[1].qty == 5);
+    assert(b.depth() == 0);
+}
+
+// Post-Only: doesn't cross -> rests directly, no trade.
+void test_post_only_rests_when_no_cross() {
+    OrderBook b;
+    b.add(lim(Side::Sell, 100, 5));
+    auto t = b.add({rng_id(), Side::Buy, Type::PostOnly, 99, 5, 0});
+    assert(t.empty());
+    assert(b.best_bid() == 99);
+    assert(b.depth() == 2);
+}
+
+// Post-Only: would cross on arrival -> rejected outright, nothing rests.
+void test_post_only_rejects_when_crossing() {
+    OrderBook b;
+    b.add(lim(Side::Sell, 100, 5));
+    auto t = b.add({rng_id(), Side::Buy, Type::PostOnly, 101, 5, 0});
+    assert(t.empty());
+    assert(b.best_bid() == 0.0);
+    assert(b.depth() == 1);
+    assert(b.best_ask() == 100);
+}
+
 int main() {
     test_basic_match();
     test_price_time_priority();
     test_market_sweep();
     test_no_cross_rests();
     test_full_fill_does_not_rest();
-    std::cout << "all 5 tests passed\n";
+    test_ioc_discards_remainder();
+    test_fok_rejects_when_not_fully_fillable();
+    test_fok_fills_when_fully_available();
+    test_post_only_rests_when_no_cross();
+    test_post_only_rejects_when_crossing();
+    std::cout << "all 10 v1 tests passed\n";
     return 0;
 }

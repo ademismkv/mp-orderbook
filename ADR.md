@@ -16,7 +16,11 @@ Concrete decisions, not options. Each one states what to build, why, and what it
 
 **Cost:** Cross-symbol operations (portfolio-level risk checks) don't get atomicity for free — handled at the gateway/risk layer, not inside matching, same as real exchanges.
 
-**Status:** Implemented (`cpp/include/spsc_ring.h`, `cpp/tests/test_threaded.cpp`, `cpp/bench/bench_threaded_scaling.cpp`). Verified against the sequential reference on 6 seeds, and clean under ThreadSanitizer (zero races, 5 seeds) and AddressSanitizer+UBSan (zero memory errors). Scaling measured near-linear (99-109% efficiency) up to 4 symbols on a 4-core sandbox — see README "Threading" section and `devlog/2026-07-17-day-4-threading.md`. Not yet tested: real network ingestion, symbol count exceeding core count (oversubscription), or a persistent multi-symbol engine process (current test is a synthetic benchmark, not the real entry point).
+**Status:** Implemented (`cpp/include/spsc_ring.h`, `cpp/tests/test_threaded.cpp`, `cpp/bench/bench_threaded_scaling.cpp`). Verified against the sequential reference on 6 seeds, and clean under ThreadSanitizer (zero races, 5 seeds) and AddressSanitizer+UBSan (zero memory errors). Scaling measured near-linear (99-109% efficiency) up to 4 symbols on a 4-core sandbox — see README "Threading" section and `devlog/2026-07-17-day-4-threading.md`.
+
+**Update, day 22c: proven against the real ITCH pipeline, not just the synthetic benchmark.** The gap this ADR originally flagged — "current test is a synthetic benchmark, not the real entry point" — is closed. `cpp/feed/tests/test_concurrent_sharded_pipeline.cpp` reuses this exact `SpscRingBuffer<T>` for real `itch::Message`s: a single router thread parses the real 691,421-message file and routes each message to 1 of 4 shards by `hash(symbol)`, using its own lightweight `order_ref_number -> symbol` table (the same routing problem `Sequencer` itself already solves internally, for the same reason — see sequencer.h). Each shard owns an independent, real `Sequencer` + `RiskEngine` + set of `OrderBookV2`s and runs the actual, unmodified pipeline code (no logic was duplicated or reimplemented for this test). Checked this is actually safe by reading `RiskEngine`'s internal state (risk.h) before assuming it: every key is symbol-scoped (`last_trade_price_[symbol]`, and a composite key starting with `symbol` for self-trade tracking) — no cross-symbol interaction exists anywhere in that class either, so K independent instances are provably equivalent to one shared instance. Result: exact match on every `Sequencer::Stats` field and the total market data event count against a sequential reference run over the same file, 0 best-bid/ask mismatches across all 828 real symbols, clean under ThreadSanitizer (verified up to 250,000 real messages — TSan's memory overhead OOM-killed a full-file run in this repo's own 3.8GB dev sandbox; disclosed in README rather than silently assumed equivalent to the full-scale plain run, which does pass 0-mismatch on the complete file every time).
+
+Still not tested: real network ingestion feeding the shards (this test drives them from an in-process parsed-message router, not a live multicast receive path), symbol count exceeding core count (oversubscription), or a dynamically-configurable shard count (fixed at 4 in the test).
 
 ## ADR-2: Order book data structure — price-level array + intrusive list, arena-allocated
 
@@ -67,7 +71,60 @@ Third attempt, both fixes applied: `cargo build` succeeded, `cargo test` passed 
 - No multi-host/distributed sharding — single host, multi-core, symbol-sharded (ADR-1) is the whole v1 story.
 - FIX support, when built: inbound only, 4.4, enough fields to place/cancel/modify a limit order — not a full spec implementation. **Status:** built (`rust/src/fix.rs`) — parses NewOrderSingle/OrderCancelRequest/OrderCancelReplaceRequest, 8 unit tests, no session layer or outbound messages. Pure Rust, no C++ dependency, so it's unaffected by the ADR-3 namespace bug — still owed a real `cargo test` run since this crate can't be built in this sandbox.
 
-## Summary table
+## ADR-5: MoldUDP64 has no session establishment/login — that's a different, real protocol
+
+ROADMAP.md's V3 section lists "session layer: heartbeats, session establishment, snapshot
+recovery" as one item, which reads like all three are gaps in the same mechanism. They're
+not. Heartbeats are implemented (`cpp/feed/moldudp64_session.h`'s `Session::on_packet`
+handles `kHeartbeat`, and — as of devlog day 21 — a real live-socket test,
+`test_udp_multicast_heartbeat`, proves a gap can be detected from a heartbeat alone during
+an idle period, not just from the arrival of the next real message). Session
+establishment is a different story, and the honest answer is: MoldUDP64 doesn't have one,
+by design, and building one for it would misrepresent the real protocol.
+
+MoldUDP64 (see `cpp/feed/moldudp64.h`'s header comment, and Nasdaq's MoldUDP64 Protocol
+Specification V1.00) is a connectionless, one-way, publish-only protocol — a session here
+means "an ordered, gap-recoverable numbered sequence of messages," not "an authenticated
+connection." There is no login exchange, no credential check, no explicit
+session-open/session-close handshake beyond the informational end-of-session control
+packet this repo already handles (`kEndOfSession`). Any subscriber that knows the
+multicast group and port can join and start consuming — that's the actual, intentional
+design of a market-data-distribution protocol serving thousands of subscribers who all
+need the identical feed.
+
+The protocol that DOES have real session establishment — login request/response,
+sequenced order-entry, heartbeats in both directions to keep a stateful connection
+alive — is SoupBinTCP, Nasdaq's separate order-entry protocol (used for submitting orders
+TO the exchange, not for consuming public market data FROM it). This repo doesn't
+implement SoupBinTCP: the whole pipeline this repo builds is market-data consumption
+(Feed Handler → Sequencer → ... → Market Data Feed), not order entry, so there's never a
+point where a real exchange would expect a SoupBinTCP login from this code. Building a
+fake login sequence on top of MoldUDP64 to satisfy a literal reading of "session
+establishment" would add code that doesn't correspond to anything a real MoldUDP64
+consumer ever does — the wrong answer to the question, not a smaller version of the right
+one.
+
+What's actually missing and worth having, tracked separately in ROADMAP.md: **snapshot
+recovery** (a way to bootstrap a subscriber that joins mid-stream or reconnects after a
+gap too large for point-to-point retransmission to cover economically — a real gap in
+this repo today, unlike session establishment, which isn't a gap at all).
+
+**Update, day 22: snapshot recovery is now built.** `cpp/feed/snapshot.h` maintains
+full per-order resting-book state tagged with a MoldUDP64 sequence number
+(`snapshot::Builder`), and `cpp/feed/tcp_socket.h` serves it to a subscriber over a real
+TCP connection — deliberately NOT over MoldUDP64/UDP, mirroring the real Nasdaq
+architecture's own split (SoupBinTCP/GLIMPSE for snapshots, MoldUDP64 for the live feed)
+for the same reason: a full-book snapshot needs reliable, ordered, arbitrarily-sized
+delivery, which UDP multicast doesn't give for free and TCP does. `moldudp64::Session`
+gained a `start_seq` constructor parameter so a subscriber that loaded a snapshot as of
+sequence N can begin consuming the live feed expecting sequence N+1, not 1 — the same
+gap-detection/recovery machinery then applies unmodified to whatever's missing between
+the snapshot and the first live packet actually received. Verified end to end
+(`test_snapshot_recovery`, devlog day 22): a subscriber that receives ONLY the second half
+of a real 445,131-event run's history — the first half is never published over multicast
+in that test at all, not even available for retransmission — still reconstructs the true
+engine's exact final best-bid/ask for all 828 real symbols, using nothing but the snapshot
+plus the live second half.
 
 | Decision | v1 (baseline) | v2 (current) | v3 (planned) |
 |---|---|---|---|

@@ -20,15 +20,23 @@
 # Market Data Feed publishing over a REAL UDP multicast socket (wrapped in
 # real MoldUDP64 framing) to a subscriber that reconstructs a shadow book
 # from the wire feed alone and is checked against the true engine state for
-# all 828 real symbols. See devlog/ day 13-19 for how each piece was built
-# and verified. (NEON SIMD parsing and the standalone gap-recovery/
-# multicast tests from day 14-16 aren't run here — ARM-only or redundant
-# with the market data feed test above; see `ctest` via the full CMake
-# build, or devlog/, for those.)
+# all 828 real symbols, and finally real snapshot recovery: a subscriber
+# that joins mid-stream (never sees the first half of history live at all)
+# bootstraps over a real TCP connection instead, then finishes via the
+# live second half of the same feed. See devlog/ day 13-22 for how each
+# piece was built and verified. (NEON SIMD parsing and the standalone
+# gap-recovery/multicast tests from day 14-16 and day 21 — including the
+# real-socket heartbeat-during-idle gap-detection test — aren't run here:
+# ARM-only or redundant with the market data feed / snapshot recovery
+# tests above; see `ctest` via the full CMake build, or devlog/, for
+# those.)
 #
 # Every number in the table below is parsed straight out of that run's own
 # stdout — nothing is precomputed or hardcoded. Takes well under a minute
-# on a normal laptop (the Rust step adds a one-time compile the first run).
+# for steps 1-9; steps 10-11 add real socket I/O (a TCP snapshot exchange
+# and a 4-way concurrent real-data run) that can push the full script to
+# ~1 minute on modest hardware (the Rust step adds a one-time compile the
+# first run, on top of that).
 set -e
 
 VERBOSE=0
@@ -50,13 +58,13 @@ run() { if [[ $VERBOSE -eq 1 ]]; then "$@"; else "$@" > "$BUILD/last.out" 2>&1 |
 echo "Building and running mp-orderbook (use --verbose for full raw output)..."
 echo
 
-step "[1/9] building v1 + v2..."
+step "[1/11] building v1 + v2..."
 g++ -std=c++20 -O3 -Wall -Wextra -I"$CPP/include" \
     "$CPP/src/order_book.cpp" "$CPP/tests/test_order_book.cpp" -o "$BUILD/test_v1"
 g++ -std=c++20 -O3 -Wall -Wextra -I"$CPP/include" \
     "$CPP/src/order_book_v2.cpp" "$CPP/tests/test_order_book_v2.cpp" -o "$BUILD/test_v2"
 
-step "[2/9] unit tests..."
+step "[2/11] unit tests..."
 TEST_V1_OUT="$("$BUILD/test_v1")"
 TEST_V2_OUT="$("$BUILD/test_v2")"
 
@@ -65,19 +73,19 @@ g++ -std=c++20 -O3 -I"$CPP/include" \
 ZERO_ALLOC_OUT="$("$BUILD/test_zero_alloc")"
 [[ $VERBOSE -eq 1 ]] && echo "$ZERO_ALLOC_OUT"
 
-step "[3/9] single-thread benchmark (2,000,000 ops)..."
+step "[3/11] single-thread benchmark (2,000,000 ops)..."
 g++ -std=c++20 -O3 -I"$CPP/include" -I"$CPP/bench" \
     "$CPP/src/order_book_v2.cpp" "$CPP/bench/bench_v2.cpp" -o "$BUILD/bench_v2"
 BENCH_OUT="$("$BUILD/bench_v2")"
 [[ $VERBOSE -eq 1 ]] && echo "$BENCH_OUT"
 
-step "[4/9] multithreaded scaling (1..4 symbols, 1,000,000 ops/symbol)..."
+step "[4/11] multithreaded scaling (1..4 symbols, 1,000,000 ops/symbol)..."
 g++ -std=c++20 -O3 -pthread -I"$CPP/include" \
     "$CPP/src/order_book_v2.cpp" "$CPP/bench/bench_threaded_scaling.cpp" -o "$BUILD/bench_threaded"
 THREAD_OUT="$("$BUILD/bench_threaded" 4 1000000)"
 [[ $VERBOSE -eq 1 ]] && echo "$THREAD_OUT"
 
-step "[5/9] replaying the real NASDAQ AAPL trading day (400,391 real events)..."
+step "[5/11] replaying the real NASDAQ AAPL trading day (400,391 real events)..."
 g++ -std=c++20 -O3 -I"$CPP/include" \
     "$CPP/src/order_book_v2.cpp" "$CPP/tools/replay_lobster.cpp" -o "$BUILD/replay_lobster"
 REPLAY_OUT="$("$BUILD/replay_lobster" "$ROOT/data/AAPL_2012-06-21_34200000_57600000_message_10.csv")"
@@ -85,7 +93,7 @@ REPLAY_OUT="$("$BUILD/replay_lobster" "$ROOT/data/AAPL_2012-06-21_34200000_57600
 
 FFI_OUT=""
 if command -v cargo >/dev/null 2>&1; then
-    step "[6/9] Rust -> cxx -> C++ FFI benchmark (2,000,000 ops, release build)..."
+    step "[6/11] Rust -> cxx -> C++ FFI benchmark (2,000,000 ops, release build)..."
     if [[ $VERBOSE -eq 1 ]]; then
         (cd "$ROOT/rust" && cargo build --release --bin bench_ffi) || { echo "cargo build failed" >&2; exit 1; }
         FFI_OUT="$(cd "$ROOT/rust" && cargo run --release --bin bench_ffi --quiet)"
@@ -95,32 +103,46 @@ if command -v cargo >/dev/null 2>&1; then
         FFI_OUT="$(cd "$ROOT/rust" && cargo run --release --bin bench_ffi --quiet 2>"$BUILD/last.out")" || { cat "$BUILD/last.out" >&2; exit 1; }
     fi
 else
-    step "[6/9] no cargo found — skipping Rust FFI benchmark (see README's \"Rust sidecar\" section to install one)"
+    step "[6/11] no cargo found — skipping Rust FFI benchmark (see README's \"Rust sidecar\" section to install one)"
 fi
 
-step "[7/9] Feed Handler: parsing 691,421 real Nasdaq ITCH 5.0 messages..."
+step "[7/11] Feed Handler: parsing 691,421 real Nasdaq ITCH 5.0 messages..."
 g++ -std=c++20 -O3 -I"$CPP/include" -I"$CPP/feed" \
     "$CPP/feed/itch_parser.cpp" "$CPP/feed/tests/test_itch_parser.cpp" -o "$BUILD/test_itch_parser"
 ITCH_OUT="$("$BUILD/test_itch_parser" "$ROOT/data/itch50_sample_20191230.bin")"
 [[ $VERBOSE -eq 1 ]] && echo "$ITCH_OUT"
 
-step "[8/9] Sequencer -> Risk -> Order Books -> Execution Reports (real data + synthetic risk cases)..."
+step "[8/11] Sequencer -> Risk -> Order Books -> Execution Reports (real data + synthetic risk cases)..."
 g++ -std=c++20 -O3 -I"$CPP/include" -I"$CPP/feed" \
     "$CPP/feed/itch_parser.cpp" "$CPP/feed/sequencer.cpp" "$CPP/feed/risk.cpp" "$CPP/src/order_book_v2.cpp" \
     "$CPP/feed/tests/test_sequencer_wiring.cpp" -o "$BUILD/test_sequencer_wiring"
 SEQ_OUT="$("$BUILD/test_sequencer_wiring" "$ROOT/data/itch50_sample_20191230.bin")"
 [[ $VERBOSE -eq 1 ]] && echo "$SEQ_OUT"
 
-step "[9/9] Market Data Feed: publishing over a REAL UDP multicast socket, subscriber reconstructs the book..."
+step "[9/11] Market Data Feed: publishing over a REAL UDP multicast socket, subscriber reconstructs the book..."
 g++ -std=c++20 -O3 -pthread -I"$CPP/include" -I"$CPP/feed" \
     "$CPP/feed/itch_parser.cpp" "$CPP/feed/sequencer.cpp" "$CPP/feed/risk.cpp" "$CPP/src/order_book_v2.cpp" \
     "$CPP/feed/tests/test_market_data_feed.cpp" -o "$BUILD/test_market_data_feed"
 MD_OUT="$("$BUILD/test_market_data_feed" "$ROOT/data/itch50_sample_20191230.bin")"
 [[ $VERBOSE -eq 1 ]] && echo "$MD_OUT"
 
+step "[10/11] Snapshot recovery: subscriber joins mid-stream via a REAL TCP snapshot, never sees the first half live..."
+g++ -std=c++20 -O3 -pthread -I"$CPP/include" -I"$CPP/feed" \
+    "$CPP/feed/itch_parser.cpp" "$CPP/feed/sequencer.cpp" "$CPP/feed/risk.cpp" "$CPP/src/order_book_v2.cpp" \
+    "$CPP/feed/tests/test_snapshot_recovery.cpp" -o "$BUILD/test_snapshot_recovery"
+SNAP_OUT="$("$BUILD/test_snapshot_recovery" "$ROOT/data/itch50_sample_20191230.bin")"
+[[ $VERBOSE -eq 1 ]] && echo "$SNAP_OUT"
+
+step "[11/11] Concurrent per-shard execution: real pipeline, 4-way symbol-sharded, vs. sequential reference..."
+g++ -std=c++20 -O3 -pthread -I"$CPP/include" -I"$CPP/feed" \
+    "$CPP/feed/itch_parser.cpp" "$CPP/feed/sequencer.cpp" "$CPP/feed/risk.cpp" "$CPP/src/order_book_v2.cpp" \
+    "$CPP/feed/tests/test_concurrent_sharded_pipeline.cpp" -o "$BUILD/test_concurrent_sharded"
+CONC_OUT="$("$BUILD/test_concurrent_sharded" "$ROOT/data/itch50_sample_20191230.bin")"
+[[ $VERBOSE -eq 1 ]] && echo "$CONC_OUT"
+
 # ---- parse ----
-v1_pass=$(echo "$TEST_V1_OUT" | grep -qi "passed" && echo "5/5" || echo "FAIL")
-v2_pass=$(echo "$TEST_V2_OUT" | grep -qi "passed" && echo "10/10" || echo "FAIL")
+v1_pass=$(echo "$TEST_V1_OUT" | grep -qi "passed" && echo "10/10" || echo "FAIL")
+v2_pass=$(echo "$TEST_V2_OUT" | grep -qi "passed" && echo "16/16" || echo "FAIL")
 
 zero_alloc_count=$(echo "$ZERO_ALLOC_OUT" | sed -n 's/^allocations during measured region: \([0-9]*\).*/\1/p')
 zero_alloc_pass=$(echo "$ZERO_ALLOC_OUT" | tail -1 | grep -q "^PASS " && echo "PASS" || echo "FAIL")
@@ -192,6 +214,21 @@ md_symbols=$(echo "$MD_OUT" | sed -n 's/.*mismatches: [0-9]* \/ \([0-9]*\)/\1/p'
 md_pass=$(echo "$MD_OUT" | tail -1 | grep -q "^PASS " && echo "PASS" || echo "FAIL")
 md_events_c=$(commafy "$md_events")
 
+snap_resting=$(echo "$SNAP_OUT" | sed -n 's/^snapshot built as of sequence [0-9]*: \([0-9]*\) resting orders.*/\1/p')
+snap_live_delivered=$(echo "$SNAP_OUT" | sed -n 's/^live events delivered: \([0-9]*\) \/ [0-9]*.*/\1/p')
+snap_live_total=$(echo "$SNAP_OUT" | sed -n 's/^live events delivered: [0-9]* \/ \([0-9]*\).*/\1/p')
+snap_mismatches=$(echo "$SNAP_OUT" | sed -n 's/^symbol best-bid\/ask mismatches: \([0-9]*\).*/\1/p')
+snap_symbols=$(echo "$SNAP_OUT" | sed -n 's/.*mismatches: [0-9]* \/ \([0-9]*\)/\1/p')
+snap_pass=$(echo "$SNAP_OUT" | tail -1 | grep -q "^PASS " && echo "PASS" || echo "FAIL")
+snap_resting_c=$(commafy "$snap_resting")
+snap_live_delivered_c=$(commafy "$snap_live_delivered")
+snap_live_total_c=$(commafy "$snap_live_total")
+
+conc_shards=$(echo "$CONC_OUT" | sed -n 's/^=== concurrent (\([0-9]*\) shards).*/\1/p')
+conc_mismatches=$(echo "$CONC_OUT" | sed -n 's/^symbol best-bid\/ask mismatches: \([0-9]*\).*/\1/p')
+conc_symbols=$(echo "$CONC_OUT" | sed -n 's/.*mismatches: [0-9]* \/ \([0-9]*\)/\1/p')
+conc_pass=$(echo "$CONC_OUT" | tail -1 | grep -q "^PASS " && echo "PASS" || echo "FAIL")
+
 MW=41  # metric column width
 VW=34  # value column width
 line() { printf '  │ %-*s │ %-*s │\n' "$MW" "$1" "$VW" "$2"; }
@@ -232,8 +269,12 @@ line "Sequencer + Risk (real data)"         "${seq_symbols} symbols, ${seq_add_o
 line "  Risk-rejected orders"               "${seq_risk_rejected_c} [${seq_pass}]"
 line "Market Data Feed (real UDP mcast)"    "${md_events_c} events delivered [${md_pass}]"
 line "  Subscriber book vs true engine"     "${md_mismatches} / ${md_symbols} symbols mismatched"
+line "Snapshot recovery (real TCP + mcast)" "snapshot: ${snap_resting_c} resting orders"
+line "  Late-joiner live half delivered"    "${snap_live_delivered_c} / ${snap_live_total_c} [${snap_pass}]"
+line "  Late-joiner book vs true engine"    "${snap_mismatches} / ${snap_symbols} symbols mismatched"
+line "Concurrent sharded pipeline"          "${conc_shards} shards vs. sequential ref [${conc_pass}]"
+line "  Sharded book vs sequential ref"     "${conc_mismatches} / ${conc_symbols} symbols mismatched"
 hline "└" "┴" "┘"
 echo
 echo "  Full raw output: ./quickstart.sh --verbose"
 echo "  What these numbers mean, and what's not yet verified: README.md, ADR.md, devlog/"
-echo "  Interactive dashboard (real precomputed batches — a browser can't invoke a compiler): dashboard/index.html"

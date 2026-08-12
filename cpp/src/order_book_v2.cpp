@@ -145,7 +145,11 @@ void OrderBookV2::match(OrderRequest& taker, std::vector<Trade>& trades) {
         if (best_idx < 0) break;  // nothing to match against on this side
 
         const Price level_price = base_ + best_idx;
-        if (taker.type == Type::Limit) {
+        // Every type except Market has a real limit price and must respect
+        // it — Market alone sweeps unconditionally. Limit, IOC, and FOK all
+        // reach here with the same price-check semantics (PostOnly never
+        // calls match() at all — see add()).
+        if (taker.type != Type::Market) {
             if (is_buy && taker.price < level_price) break;   // bid below ask -> no cross
             if (!is_buy && taker.price > level_price) break;  // ask above bid -> no cross
         }
@@ -188,6 +192,29 @@ void OrderBookV2::match(OrderRequest& taker, std::vector<Trade>& trades) {
     }
 }
 
+bool OrderBookV2::can_fully_fill(const OrderRequest& taker) const {
+    const bool is_buy = (taker.side == Side::Buy);
+    int64_t idx = is_buy ? best_ask_idx_ : best_bid_idx_;
+    if (idx < 0) return taker.qty == 0;  // nothing resting on the other side
+    Quantity available = 0;
+    if (is_buy) {
+        for (; idx < static_cast<int64_t>(levels_.size()); ++idx) {
+            const Price level_price = base_ + idx;
+            if (level_price > taker.price) break;
+            available += levels_[static_cast<size_t>(idx)].total_qty;
+            if (available >= taker.qty) return true;
+        }
+    } else {
+        for (; idx >= 0; --idx) {
+            const Price level_price = base_ + idx;
+            if (level_price < taker.price) break;
+            available += levels_[static_cast<size_t>(idx)].total_qty;
+            if (available >= taker.qty) return true;
+        }
+    }
+    return false;
+}
+
 void OrderBookV2::add(const OrderRequest& req, std::vector<Trade>& out_trades) {
     out_trades.clear();  // reuse the caller's buffer's capacity; no allocation here
     if (req.type == Type::Cancel) {
@@ -196,6 +223,33 @@ void OrderBookV2::add(const OrderRequest& req, std::vector<Trade>& out_trades) {
     }
 
     OrderRequest taker = req;
+
+    if (taker.type == Type::PostOnly) {
+        // Must never take liquidity: reject outright if it would cross on
+        // arrival, otherwise rest directly. Never calls match() — a
+        // non-crossing Post-Only order has nothing to match against by
+        // definition, so this isn't an optimization, it's the correct
+        // behavior for this order type.
+        const bool is_buy = (taker.side == Side::Buy);
+        const bool would_cross = is_buy ? (has_ask() && taker.price >= best_ask())
+                                         : (has_bid() && taker.price <= best_bid());
+        if (would_cross) {
+            return;  // rejected: no trades, nothing rests
+        }
+        int64_t idx = ensure_index_for_price(taker.price);
+        push_back_order(idx, taker.side, taker);
+        if (taker.side == Side::Buy) {
+            if (best_bid_idx_ < 0 || idx > best_bid_idx_) best_bid_idx_ = idx;
+        } else {
+            if (best_ask_idx_ < 0 || idx < best_ask_idx_) best_ask_idx_ = idx;
+        }
+        return;
+    }
+
+    if (taker.type == Type::FOK && !can_fully_fill(taker)) {
+        return;  // rejected: no trades, nothing rests
+    }
+
 #ifdef OBV2_PROFILE_BREAKDOWN
     const auto t_match0 = std::chrono::steady_clock::now();
 #endif

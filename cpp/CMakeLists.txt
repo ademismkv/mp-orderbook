@@ -10,10 +10,12 @@ endif()
 add_compile_options(-Wall -Wextra)
 
 # Cross-TU inlining + native codegen. Neither changes any observable
-# behavior (verified: 10/10 v2 unit tests, 8/8 differential fuzz seeds
-# byte-identical vs. a non-LTO/non-native build, threaded pipeline still
-# matches the sequential reference under plain and TSan builds — see
-# devlog). Measured ~5% throughput gain on a 2M-op single-thread run;
+# behavior (verified: 16/16 v2 unit tests, 10/10 v1 unit tests, 8/8
+# differential fuzz seeds byte-identical vs. a non-LTO/non-native build
+# (both the standard fixed-band workload and the rebase-forcing price-walk
+# workload, including IOC/FOK/PostOnly), threaded pipeline still matches
+# the sequential reference under plain and TSan builds — see devlog).
+# Measured ~5% throughput gain on a 2M-op single-thread run;
 # -march=native trades portability of the built binary for this, which is
 # fine for a benchmark/demo target built and run on the same machine.
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -115,6 +117,13 @@ find_package(Threads REQUIRED)
 add_executable(test_udp_multicast_e2e feed/tests/test_udp_multicast_e2e.cpp)
 target_link_libraries(test_udp_multicast_e2e PRIVATE itch_feed Threads::Threads)
 
+# Real-socket exercise of gap detection triggered purely by a heartbeat
+# during an idle period — the scenario test_udp_multicast_e2e.cpp doesn't
+# cover (there, the gap is discovered by the next real message arriving
+# early). See ADR-5 and devlog day 21.
+add_executable(test_udp_multicast_heartbeat feed/tests/test_udp_multicast_heartbeat.cpp)
+target_link_libraries(test_udp_multicast_heartbeat PRIVATE itch_feed Threads::Threads)
+
 # Market Data Feed — ROADMAP.md's last pipeline stage. Runs the full real
 # file through Sequencer -> Risk -> Order Books -> Execution Reports (same
 # as test_sequencer_wiring), capturing every public market data event, then
@@ -124,6 +133,23 @@ target_link_libraries(test_udp_multicast_e2e PRIVATE itch_feed Threads::Threads)
 # feed alone. See devlog day 19.
 add_executable(test_market_data_feed feed/tests/test_market_data_feed.cpp)
 target_link_libraries(test_market_data_feed PRIVATE itch_feed Threads::Threads)
+
+# Real snapshot recovery: a subscriber that joins the feed mid-stream (never
+# sees the first half of real event history, not even via retransmission)
+# bootstraps from a real TCP snapshot exchange (snapshot.h, tcp_socket.h)
+# instead, then finishes via the live second half of the same real UDP
+# multicast feed. See ADR-5 and devlog day 22 for why this, unlike MoldUDP64
+# "session establishment," is a real gap this repo had.
+add_executable(test_snapshot_recovery feed/tests/test_snapshot_recovery.cpp)
+target_link_libraries(test_snapshot_recovery PRIVATE itch_feed Threads::Threads)
+
+# ADR-1's "symbol -> hash -> shard -> single writer" threading model,
+# proven against the real ITCH pipeline (Sequencer -> Risk -> Order Books),
+# not just the synthetic bench_threaded_scaling.cpp workload. Runs the real
+# file twice — sequential reference, then 4-way symbol-sharded concurrent —
+# and requires them to agree exactly. See devlog day 22c.
+add_executable(test_concurrent_sharded_pipeline feed/tests/test_concurrent_sharded_pipeline.cpp)
+target_link_libraries(test_concurrent_sharded_pipeline PRIVATE itch_feed Threads::Threads)
 
 find_package(Threads REQUIRED)
 
@@ -167,8 +193,11 @@ add_test(NAME ffi_adapter_standalone COMMAND test_order_book_v2_ffi_standalone)
 add_test(NAME itch_parser_real_data COMMAND test_itch_parser "${CMAKE_SOURCE_DIR}/../data/itch50_sample_20191230.bin")
 add_test(NAME moldudp64_session COMMAND test_moldudp64 "${CMAKE_SOURCE_DIR}/../data/itch50_sample_20191230.bin")
 add_test(NAME udp_multicast_e2e COMMAND test_udp_multicast_e2e "${CMAKE_SOURCE_DIR}/../data/itch50_sample_20191230.bin")
+add_test(NAME udp_multicast_heartbeat COMMAND test_udp_multicast_heartbeat "${CMAKE_SOURCE_DIR}/../data/itch50_sample_20191230.bin")
 if(ITCH_HAVE_NEON)
   add_test(NAME itch_simd_neon COMMAND test_itch_simd_neon "${CMAKE_SOURCE_DIR}/../data/itch50_sample_20191230.bin")
 endif()
 add_test(NAME sequencer_wiring COMMAND test_sequencer_wiring "${CMAKE_SOURCE_DIR}/../data/itch50_sample_20191230.bin")
 add_test(NAME market_data_feed COMMAND test_market_data_feed "${CMAKE_SOURCE_DIR}/../data/itch50_sample_20191230.bin")
+add_test(NAME snapshot_recovery COMMAND test_snapshot_recovery "${CMAKE_SOURCE_DIR}/../data/itch50_sample_20191230.bin")
+add_test(NAME concurrent_sharded_pipeline COMMAND test_concurrent_sharded_pipeline "${CMAKE_SOURCE_DIR}/../data/itch50_sample_20191230.bin")

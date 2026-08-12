@@ -25,7 +25,13 @@
 // matches how real order books represent price.
 
 enum class Side { Buy, Sell };
-enum class Type { Limit, Market, Cancel };
+// See order.h (v1) for the same enum — semantics are identical across both
+// versions so differential fuzzing can cover them. IOC: match what's
+// available at arrival, discard the remainder, never rests. FOK: verified
+// fully-fillable via a non-mutating pre-check before any trade commits, or
+// nothing trades. PostOnly: rejected outright if it would cross on arrival
+// (never calls match()), otherwise rests directly.
+enum class Type { Limit, Market, Cancel, IOC, FOK, PostOnly };
 
 using OrderId  = uint64_t;
 using Price    = int64_t;
@@ -168,6 +174,11 @@ private:
     void    push_back_order(int64_t level_idx, Side side, const OrderRequest& req);
     // Appends fills into out_trades (does not clear it — add() owns that).
     void    match(OrderRequest& taker, std::vector<Trade>& out_trades);
+    // Non-mutating: is taker.qty fully fillable against the opposite side
+    // within taker.price, using the already-tracked PriceLevel::total_qty
+    // aggregate (no need to walk the intrusive per-order list)? Used by
+    // FOK to decide whether to commit to match() at all.
+    bool    can_fully_fill(const OrderRequest& taker) const;
 
 #ifdef OBV2_PROFILE_BREAKDOWN
     Breakdown breakdown_;

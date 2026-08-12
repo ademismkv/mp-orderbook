@@ -72,10 +72,16 @@ jobs:
       # core engine: order book unit tests, threaded/TSan-relevant test,
       # FFI adapter, the real-data Feed Handler (itch_parser_real_data),
       # MoldUDP64 gap recovery + real UDP multicast (moldudp64_session,
-      # udp_multicast_e2e), Sequencer -> Risk -> Order Books -> Execution
-      # Reports (sequencer_wiring), and Market Data Feed over a real second
+      # udp_multicast_e2e, and udp_multicast_heartbeat — gap detection
+      # triggered purely by a real heartbeat packet during an idle period,
+      # see ADR-5 and devlog day 21), Sequencer -> Risk -> Order Books -> Execution
+      # Reports (sequencer_wiring), Market Data Feed over a real second
       # UDP multicast socket with a shadow-book-reconstructing subscriber
-      # (market_data_feed) — every CTest name below is one add_test(...) in
+      # (market_data_feed), and real snapshot recovery over a real TCP
+      # connection for a subscriber that joins mid-stream (snapshot_recovery
+      # — see ADR-5 and devlog day 22), and ADR-1's threading model proven against the
+      # real pipeline itself, not just a synthetic benchmark (concurrent_sharded_pipeline,
+      # devlog day 22c) — every CTest name below is one add_test(...) in
       # CMakeLists.txt; see devlog day 13-19 for how each was built and
       # verified. itch_simd_neon is ARM-only and skips itself on this
       # x86_64 runner (see CMakeLists.txt's ITCH_HAVE_NEON guard).
@@ -113,3 +119,22 @@ jobs:
           g++ -std=c++20 -O1 -g -fsanitize=thread -pthread \
               -Iinclude -Ifuzz src/order_book_v2.cpp tests/test_threaded.cpp -o test_threaded_tsan
           ./test_threaded_tsan 42 5000
+
+      # ADR-1's threading model, proven against the real ITCH pipeline (not
+      # just the synthetic benchmark above) — see devlog day 22c. The
+      # message-count cap (2nd arg) is real, not arbitrary: a plain run of
+      # this test runs the full 691,421-message file twice (sequential
+      # reference + concurrent) with no issue, but TSan's 5-10x memory
+      # overhead on top of that OOM-killed the process at ~260K+ messages
+      # in this repo's own dev sandbox (3.8GB RAM) — 250,000 was the
+      # largest cap actually verified clean there (651 real symbols, 4,281
+      # real orders, 0 races). A structural data race in the router/ring-
+      # buffer/worker protocol would reproduce at this scale too, since the
+      # same code paths execute either way.
+      - name: build + run the real ITCH pipeline, symbol-sharded, under TSan
+        working-directory: cpp
+        run: |
+          g++ -std=c++20 -O1 -g -fsanitize=thread -pthread \
+              -Iinclude -Ifeed feed/itch_parser.cpp feed/sequencer.cpp feed/risk.cpp src/order_book_v2.cpp \
+              feed/tests/test_concurrent_sharded_pipeline.cpp -o test_concurrent_sharded_tsan
+          ./test_concurrent_sharded_tsan ../data/itch50_sample_20191230.bin 250000

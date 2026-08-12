@@ -123,6 +123,71 @@ void test_reduce_unknown_id_returns_false() {
     assert(b.reduce(999, 1) == false);
 }
 
+// IOC: fills what's available immediately, discards the remainder, never
+// rests — depth must stay at 0 even though 2 units went unfilled.
+void test_ioc_discards_remainder() {
+    OrderBookV2 b;
+    b.add(lim(Side::Sell, 100, 5));
+    auto t = b.add({rng_id(), Side::Buy, Type::IOC, 100, 7});
+    assert(t.size() == 1 && t[0].qty == 5);
+    assert(b.depth() == 0);
+    assert(!b.has_bid());
+}
+
+// IOC with nothing to match against: no trades, nothing rests either.
+void test_ioc_no_cross_does_nothing() {
+    OrderBookV2 b;
+    auto t = b.add({rng_id(), Side::Buy, Type::IOC, 100, 5});
+    assert(t.empty());
+    assert(b.depth() == 0);
+}
+
+// FOK: the resting liquidity (5) is less than the requested qty (10) at a
+// crossable price — must reject entirely, no partial fill, nothing rests.
+void test_fok_rejects_when_not_fully_fillable() {
+    OrderBookV2 b;
+    b.add(lim(Side::Sell, 100, 5));
+    auto t = b.add({rng_id(), Side::Buy, Type::FOK, 100, 10});
+    assert(t.empty());
+    assert(b.depth() == 1);   // the resting sell is untouched
+    assert(b.best_ask() == 100);
+}
+
+// FOK: exactly enough liquidity across two price levels within the limit
+// price — must fully fill, using both levels.
+void test_fok_fills_when_fully_available() {
+    OrderBookV2 b;
+    b.add(lim(Side::Sell, 100, 5));
+    b.add(lim(Side::Sell, 101, 5));
+    auto t = b.add({rng_id(), Side::Buy, Type::FOK, 101, 10});
+    assert(t.size() == 2);
+    assert(t[0].price == 100 && t[0].qty == 5);
+    assert(t[1].price == 101 && t[1].qty == 5);
+    assert(b.depth() == 0);
+}
+
+// Post-Only: doesn't cross the resting ask -> rests directly, no trade.
+void test_post_only_rests_when_no_cross() {
+    OrderBookV2 b;
+    b.add(lim(Side::Sell, 100, 5));
+    auto t = b.add({rng_id(), Side::Buy, Type::PostOnly, 99, 5});
+    assert(t.empty());
+    assert(b.best_bid() == 99);
+    assert(b.depth() == 2);
+}
+
+// Post-Only: would cross the resting ask on arrival -> rejected outright,
+// nothing rests, the resting ask is untouched (no trade happened either).
+void test_post_only_rejects_when_crossing() {
+    OrderBookV2 b;
+    b.add(lim(Side::Sell, 100, 5));
+    auto t = b.add({rng_id(), Side::Buy, Type::PostOnly, 101, 5});
+    assert(t.empty());
+    assert(!b.has_bid());
+    assert(b.depth() == 1);
+    assert(b.best_ask() == 100);
+}
+
 int main() {
     test_basic_match();
     test_price_time_priority();
@@ -134,6 +199,12 @@ int main() {
     test_reduce_keeps_time_priority();
     test_reduce_to_zero_acts_like_cancel();
     test_reduce_unknown_id_returns_false();
-    std::cout << "all 10 v2 tests passed\n";
+    test_ioc_discards_remainder();
+    test_ioc_no_cross_does_nothing();
+    test_fok_rejects_when_not_fully_fillable();
+    test_fok_fills_when_fully_available();
+    test_post_only_rests_when_no_cross();
+    test_post_only_rejects_when_crossing();
+    std::cout << "all 16 v2 tests passed\n";
     return 0;
 }

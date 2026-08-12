@@ -10,7 +10,7 @@
 // included in the same translation unit — differential fuzzing runs them
 // as two separate binaries and diffs the printed summaries instead).
 
-enum class OpKind : uint8_t { AddLimit, AddMarket, Cancel };
+enum class OpKind : uint8_t { AddLimit, AddMarket, Cancel, AddIOC, AddFOK, AddPostOnly };
 
 struct Op {
     OpKind   kind;
@@ -25,7 +25,9 @@ inline std::vector<Op> generate_ops(uint64_t seed, int count) {
     std::uniform_int_distribution<int> side_dist(0, 1);
     std::uniform_int_distribution<int> price_offset(-50, 50);
     std::uniform_int_distribution<int> qty_dist(1, 100);
-    std::uniform_int_distribution<int> action_dist(0, 99);  // 0-84 add-limit, 85-94 add-market, 95-99 cancel
+    // 0-64 add-limit, 65-74 add-market, 75-81 add-IOC, 82-88 add-FOK,
+    // 89-94 add-post-only, 95-99 cancel.
+    std::uniform_int_distribution<int> action_dist(0, 99);
 
     std::vector<Op> ops;
     ops.reserve(static_cast<size_t>(count));
@@ -36,7 +38,11 @@ inline std::vector<Op> generate_ops(uint64_t seed, int count) {
         const int action = action_dist(rng);
         if (action < 95 || live_ids.empty()) {
             Op op;
-            op.kind = (action < 85) ? OpKind::AddLimit : OpKind::AddMarket;
+            op.kind = (action < 65) ? OpKind::AddLimit
+                    : (action < 75) ? OpKind::AddMarket
+                    : (action < 82) ? OpKind::AddIOC
+                    : (action < 89) ? OpKind::AddFOK
+                    :                 OpKind::AddPostOnly;
             op.id = next_id++;
             op.is_buy = side_dist(rng) != 0;
             op.price = 10000 + price_offset(rng);
@@ -77,7 +83,9 @@ inline std::vector<Op> generate_ops_price_walk(uint64_t seed, int count) {
     std::uniform_int_distribution<int> side_dist(0, 1);
     std::uniform_int_distribution<int> price_step(-5, 5);   // small step, but unbounded drift over time
     std::uniform_int_distribution<int> qty_dist(1, 100);
-    std::uniform_int_distribution<int> action_dist(0, 99);  // 0-84 add-limit, 85-94 add-market, 95-99 cancel
+    // 0-64 add-limit, 65-74 add-market, 75-81 add-IOC, 82-88 add-FOK,
+    // 89-94 add-post-only, 95-99 cancel.
+    std::uniform_int_distribution<int> action_dist(0, 99);
 
     std::vector<Op> ops;
     ops.reserve(static_cast<size_t>(count));
@@ -92,7 +100,11 @@ inline std::vector<Op> generate_ops_price_walk(uint64_t seed, int count) {
         const int action = action_dist(rng);
         if (action < 95 || live_ids.empty()) {
             Op op;
-            op.kind = (action < 85) ? OpKind::AddLimit : OpKind::AddMarket;
+            op.kind = (action < 65) ? OpKind::AddLimit
+                    : (action < 75) ? OpKind::AddMarket
+                    : (action < 82) ? OpKind::AddIOC
+                    : (action < 89) ? OpKind::AddFOK
+                    :                 OpKind::AddPostOnly;
             op.id = next_id++;
             op.is_buy = side_dist(rng) != 0;
             op.price = mid;

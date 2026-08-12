@@ -8,6 +8,31 @@ std::vector<Trade> OrderBook::add(const Order& o) {
     }
 
     Order taker = o;
+
+    if (taker.type == Type::PostOnly) {
+        // Must never take liquidity: reject outright if it would cross on
+        // arrival, otherwise rest directly. Never calls match() — mirrors
+        // v2's OrderBookV2::add() so differential fuzzing covers this type.
+        const bool taker_is_buy = (taker.side == Side::Buy);
+        const bool would_cross = taker_is_buy
+            ? (!asks_.empty() && taker.price >= asks_.begin()->first)
+            : (!bids_.empty() && taker.price <= bids_.begin()->first);
+        if (would_cross) {
+            return {};  // rejected: no trades, nothing rests
+        }
+        if (taker_is_buy) {
+            bids_[taker.price].push_back(taker);
+        } else {
+            asks_[taker.price].push_back(taker);
+        }
+        index_[taker.id] = { taker.side, taker.price };
+        return {};
+    }
+
+    if (taker.type == Type::FOK && !can_fully_fill(taker)) {
+        return {};  // rejected: no trades, nothing rests
+    }
+
     auto trades = match(taker);  // taker passed by ref, taker.qty now reflects fills
 
     // If limit order still has qty left, rest on the book
@@ -20,6 +45,25 @@ std::vector<Trade> OrderBook::add(const Order& o) {
         index_[taker.id] = { taker.side, taker.price };
     }
     return trades;
+}
+
+bool OrderBook::can_fully_fill(const Order& taker) const {
+    const bool taker_is_buy = (taker.side == Side::Buy);
+    uint64_t available = 0;
+    if (taker_is_buy) {
+        for (const auto& [price, queue] : asks_) {
+            if (price > taker.price) break;
+            for (const auto& ord : queue) available += ord.qty;
+            if (available >= taker.qty) return true;
+        }
+    } else {
+        for (const auto& [price, queue] : bids_) {
+            if (price < taker.price) break;
+            for (const auto& ord : queue) available += ord.qty;
+            if (available >= taker.qty) return true;
+        }
+    }
+    return false;
 }
 
 namespace {
@@ -35,8 +79,11 @@ std::vector<Trade> match_against(
         auto it = opp.begin();                 // best opposite level
         const double best_opp = it->first;
 
-        // Price check — does the taker cross?
-        if (taker.type == Type::Limit) {
+        // Price check — does the taker cross? Every type except Market has
+        // a real limit price and must respect it (Limit, IOC, FOK all reach
+        // here with the same semantics; PostOnly never calls match() at
+        // all — see add()).
+        if (taker.type != Type::Market) {
             if (taker_is_buy && taker.price < best_opp) break;  // bid below ask -> no cross
             if (!taker_is_buy && taker.price > best_opp) break; // ask above bid -> no cross
         }

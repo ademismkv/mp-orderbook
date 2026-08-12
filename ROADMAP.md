@@ -22,7 +22,7 @@ improvement rather than one undifferentiated pile of work.
 - Measurement methodology documented (see devlog)
 - CI: build + test + differential-fuzz gate on every commit
 
-## V3 — in progress (this roadmap)
+## V3 — done (day 22c)
 
 The actual exchange pipeline, replacing "CSV in, matched trades out" with
 "real wire-format market data in, sequenced and risk-checked, matched
@@ -44,25 +44,51 @@ NASDAQ ITCH 5.0 UDP multicast
    Market Data Feed     (outbound, republish book state / trades)
 ```
 
-Order types beyond plain Limit: Market, IOC, FOK, Post-Only.
-Session layer: heartbeats, session establishment, snapshot recovery.
+Order types beyond plain Limit: Market, IOC, FOK, Post-Only — done (day 21):
+implemented and differentially fuzzed in both v1 and v2; not yet wired into
+the ITCH pipeline above the core engine (real Add Order messages are all
+plain Limit) or the Rust FFI layer (no rustc/cargo available to verify a
+Rust-side change) — see README's Limitations section.
+Session layer: heartbeats — done, including a real live-socket test proving
+gap detection from a heartbeat alone during an idle period (day 21,
+`test_udp_multicast_heartbeat`); session establishment — not a gap at all,
+see ADR-5 (MoldUDP64 is connectionless/publish-only by design, no
+login/handshake exists in the real protocol; that belongs to SoupBinTCP, a
+different Nasdaq protocol for order entry, out of scope for a market-data
+pipeline); snapshot recovery — done (day 22): a real TCP-based exchange
+(`cpp/feed/snapshot.h`, `cpp/feed/tcp_socket.h`, GLIMPSE-inspired, not
+literal SoupBinTCP framing) lets a subscriber that joins mid-stream
+bootstrap full per-order book state as of a given sequence number, then
+continue via `moldudp64::Session`'s new `start_seq` parameter — verified
+end to end (`test_snapshot_recovery`) with a subscriber that never receives
+the first half of real event history at all, still matching the true
+engine's final state for all 828 real symbols.
 
-### Feed Handler build order (highest-priority missing piece)
+### Feed Handler build order — all done
 
 1. Real ITCH 5.0 message parser (full spec, ~20+ message types) — verified
-   against real Nasdaq-published sample data, not synthetic vectors.
+   against real Nasdaq-published sample data, not synthetic vectors. **Done.**
 2. MoldUDP64 session framing — this is how real ITCH multicast actually
    handles gaps: sequence numbers + heartbeats + a rewind/retransmission
    request-response session. Building an ad hoc gap scheme instead of this
    would be the wrong answer to "how do you detect a dropped packet."
+   **Done**, including real-socket heartbeat-during-idle gap detection
+   (day 21) and real snapshot recovery for a subscriber joining mid-stream
+   (day 22b).
 3. Real UDP multicast sender (simulated exchange feed) + receiver (the
    feed handler itself), exercised over loopback since there's no live
-   exchange feed to actually subscribe to.
-4. AVX2 SIMD parser for the hot decode path, differentially verified
-   byte-for-byte against the scalar parser — same v1-vs-v2 discipline
-   already used for the matching core.
+   exchange feed to actually subscribe to. **Done.**
+4. SIMD parser for the hot decode path, differentially verified byte-for-
+   byte against the scalar parser — same v1-vs-v2 discipline already used
+   for the matching core. **Done as NEON, not AVX2** — this repo's actual
+   hardware is ARM64; shipping unverified x86 SIMD code would have violated
+   the same discipline this substitution follows (devlog day 16). Result is
+   honestly inconclusive (0.58x-1.51x vs. a fair scalar baseline), not
+   presented as a clean win.
 5. Wire the parsed, sequenced stream into the existing OrderBookV2
-   pipeline, closing the loop end to end.
+   pipeline, closing the loop end to end. **Done**, including proving the
+   symbol-sharded concurrency model (ADR-1) against this real pipeline, not
+   just a synthetic benchmark (day 22c).
 
 ### Concurrency model for V3
 
@@ -75,6 +101,18 @@ symbol → hash → shard → single writer (one book, one thread, no mutex)
 
 One global sequencer assigns order; per-symbol shards each own their book
 exclusively. No shared mutable state between shards.
+
+**Done (day 22c)**: proven against the real ITCH pipeline itself, not just
+`bench_threaded_scaling.cpp`'s synthetic workload. A single router thread
+reads the real file and routes each message to one of 4 shards by
+`hash(symbol)`; each shard owns an independent `Sequencer` + `RiskEngine` +
+set of `OrderBookV2`s and runs the real, unmodified pipeline code. Checked
+against a sequential reference run over the same real file: exact match on
+every `Sequencer::Stats` field and 0 best-bid/ask mismatches across all 828
+real symbols (`test_concurrent_sharded_pipeline`), clean under ThreadSanitizer
+too (verified up to 250,000 real messages — the largest run that fits this
+repo's own dev sandbox's memory alongside TSan's overhead; a structural race
+would reproduce at that scale, not just at the full file's).
 
 ## V4
 
@@ -118,9 +156,13 @@ runs reporting already does for the current numbers.
 flat-array "near book" vs. hash-map "far book", `[[likely]]`/`[[unlikely]]`,
 huge pages, `-march=native` (already landed — see devlog day 12).
 
-**Production features** — self-trade prevention, fat-finger limits, max
-position, max order size, price bands, heartbeats, sessions, snapshot
-recovery.
+**Production features** — self-trade prevention, fat-finger limits
+(`max_order_size`), price bands: **done** (day 15-16, `RiskEngine`).
+Heartbeats: **done** (day 20-21). Snapshot recovery: **done** (day 22).
+Still missing: max-position limits — would need tracking net position per
+participant, which needs the same participant-identity information
+self-trade prevention is already honestly missing for the anonymous
+majority of real ITCH flow (see Limitations).
 
 **Testing** — property-based invariants (never-crossed book, quantity
 conservation, price-time priority preserved) on top of the existing
@@ -146,8 +188,35 @@ duplicating them.
 
 ## Being honest about what's missing today
 
-The current engine assumes: perfect input, already-parsed messages, no
-dropped packets, no malformed packets, no network, no risk, no sessions,
-no backpressure. Real exchanges don't get any of that for free. Closing
-V3 is what turns "a fast order book" into "an exchange" — that's the
-actual gap this roadmap exists to close.
+This section described the original state of the project, before V3 work
+started: "perfect input, already-parsed messages, no dropped packets, no
+malformed packets, no network, no risk, no sessions, no backpressure."
+That's no longer accurate and is kept here only as a record of where this
+started — real ITCH parsing, real UDP multicast with real gap detection
+and recovery, a real risk stage, heartbeats, and real snapshot recovery
+are all built and verified (see the pipeline diagram and Verification
+section above, and README.md).
+
+What's honestly still open as of day 22c, updated rather than left stale:
+- Position-based risk limits (would need participant-identity information
+  most real ITCH flow doesn't carry — see README's Limitations).
+- A true p50/p99/p99.9 latency *distribution* histogram in the dashboard
+  (currently a per-batch line chart, not a distribution view).
+- Multi-host/distributed sharding — explicitly out of scope (ADR-4), not
+  a gap.
+- The new order types (IOC/FOK/Post-Only) aren't wired into the ITCH
+  pipeline above the core engine (real Add Order messages are all plain
+  Limit) or the Rust FFI layer (no rustc/cargo in this environment).
+- The concurrent sharded pipeline demo uses a fixed 4 shards and was only
+  verified under ThreadSanitizer up to 250,000 of the file's 691,421 real
+  messages (a sandbox memory constraint, not a correctness gap — see
+  README's Limitations).
+- Real network ingestion runs over loopback, not a real NIC or a live
+  exchange feed — there is no live feed to subscribe to.
+- Measurement methodology gaps documented in README (no core pinning, no
+  disabled turbo/C-states, no hardware cycle counter, no TSC calibration).
+
+Closing V3 is what turned "a fast order book" into something closer to an
+honest exchange simulation — that was the actual gap this roadmap existed
+to close, and the remaining items above are what's left, not a hidden
+larger gap.

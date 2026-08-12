@@ -31,8 +31,18 @@ public:
     // just record calls and hand back synthetic retransmissions.
     using RequestCallback = std::function<void(const RequestPacket&)>;
 
-    Session(SessionId session, MessageCallback on_message, RequestCallback on_request_needed)
-        : session_(session), on_message_(std::move(on_message)), on_request_needed_(std::move(on_request_needed)) {}
+    // start_seq: the sequence number this session should next expect.
+    // Defaults to 1 (a subscriber joining at the very start of the
+    // session, per the spec's own examples). A subscriber recovering from
+    // a snapshot instead starts at snapshot_as_of_seq + 1 — see
+    // cpp/feed/snapshot.h — so it correctly treats every live packet at or
+    // below the snapshot's sequence as already-known (not a gap to fill),
+    // while still detecting and recovering any real gap between the
+    // snapshot and the first live packet it actually receives.
+    Session(SessionId session, MessageCallback on_message, RequestCallback on_request_needed,
+            uint64_t start_seq = 1)
+        : session_(session), on_message_(std::move(on_message)), on_request_needed_(std::move(on_request_needed)),
+          next_expected_(start_seq) {}
 
     // Feed one received Downstream Packet's already-decoded header and
     // message blocks (the session-id-matches-this-session check is the
